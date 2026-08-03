@@ -1,0 +1,21 @@
+{
+    "name": "ObjectSpawning.Runtime",
+    "rootNamespace": "ObjectSpawning",
+    "references": [
+        "Unity.InputSystem",
+        "UnityEngine.UI",
+        "VoiceSDK.Dictation.Runtime",
+        "Meta.Wit.Dictation",
+        "Meta.WitAi",
+        "glTFast"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

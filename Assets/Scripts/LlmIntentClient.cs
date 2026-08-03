@@ -1,0 +1,215 @@
+using System;
+using System.Collections;
+using System.Text;
+using UnityEngine;
+using UnityEngine.Networking;
+
+namespace ObjectSpawning
+{
+    // Stage 2: sends the transcript to the backend for real LLM-based intent understanding,
+    // replacing Stage 1's keyword spotting. The backend keeps the LLM's output contained to a
+    // small JSON schema (shape/color/size) via tool-calling, so this class never has to deal
+    // with free-form text -- only validate the schema before trusting it in Unity.
+    public class LlmIntentClient : MonoBehaviour
+    {
+        [SerializeField] string backendUrl = "http://127.0.0.1:8000";
+        // Standalone backend+Gemini latency measured ~600-930ms with zero network hops. The real
+        // headset-to-PC WiFi round trip adds on top of that and can be inconsistent -- 8s was
+        // occasionally too tight, silently degrading loose phrasing to the local keyword fallback.
+        [SerializeField] float timeoutSeconds = 15f;
+
+        string EffectiveBackendUrl => BackendUrlResolver.Resolve(backendUrl);
+
+        [Serializable]
+        class ParseIntentRequestBody
+        {
+            public string transcript;
+        }
+
+        [Serializable]
+        class ParseIntentResponseBody
+        {
+            public bool recognized;
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete
+            public string shape;       // create only
+            public string prompt;      // generate only
+            public string color;       // create or recolor
+            public string size;        // create only (absolute)
+            public string size_delta;  // resize only ("bigger" | "smaller")
+            public string relation;        // create only ("on" | "next_to")
+            public string reference_shape; // create only, only with relation set
+        }
+
+        // At most one of spawnIntent/editIntent/generateIntent is non-null. All three null means
+        // either the LLM legitimately didn't recognize a command (error is null/empty) or the
+        // request itself failed -- network unreachable, timeout, or a malformed/invalid response
+        // (error describes what happened). Callers should fall back to the keyword parser for
+        // spawn/edit in both null cases (there's no local fallback for generate -- see
+        // GenerateIntent), but only the error case is worth surfacing as something went wrong.
+        public void ParseIntent(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string> onComplete) =>
+            StartCoroutine(ParseIntentRoutine(transcript, onComplete));
+
+        IEnumerator ParseIntentRoutine(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string> onComplete)
+        {
+            var startTime = Time.realtimeSinceStartup;
+            var bodyJson = JsonUtility.ToJson(new ParseIntentRequestBody { transcript = transcript });
+            var bodyBytes = Encoding.UTF8.GetBytes(bodyJson);
+
+            using var request = new UnityWebRequest($"{EffectiveBackendUrl}/parse-intent", "POST");
+            request.uploadHandler = new UploadHandlerRaw(bodyBytes);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/json");
+            request.timeout = Mathf.CeilToInt(timeoutSeconds);
+
+            yield return request.SendWebRequest();
+
+            var elapsedMs = (Time.realtimeSinceStartup - startTime) * 1000f;
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                var error = $"Backend unreachable: {request.error}";
+                Debug.LogWarning($"[LlmIntentClient] Request failed: {request.error}");
+                onComplete?.Invoke(null, null, null, elapsedMs, error);
+                yield break;
+            }
+
+            ParseIntentResponseBody response = null;
+            try
+            {
+                response = JsonUtility.FromJson<ParseIntentResponseBody>(request.downloadHandler.text);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[LlmIntentClient] Malformed JSON response: {e.Message}");
+                onComplete?.Invoke(null, null, null, elapsedMs, $"Malformed response: {e.Message}");
+                yield break;
+            }
+
+            if (response == null)
+            {
+                onComplete?.Invoke(null, null, null, elapsedMs, "Empty or invalid response from backend.");
+                yield break;
+            }
+
+            if (!response.recognized)
+            {
+                // Legitimate: the LLM ran fine and correctly found no command here.
+                onComplete?.Invoke(null, null, null, elapsedMs, null);
+                yield break;
+            }
+
+            var action = string.IsNullOrEmpty(response.action) ? "create" : response.action.ToLowerInvariant();
+
+            if (action == "create")
+            {
+                if (!TryParseShape(response.shape, out var shape))
+                {
+                    var error = $"Backend returned invalid shape: '{response.shape}'";
+                    Debug.LogWarning($"[LlmIntentClient] {error}");
+                    onComplete?.Invoke(null, null, null, elapsedMs, error);
+                    yield break;
+                }
+
+                ColorNaming.TryGetColor(response.color, out var color);
+                var scale = ParseSize(response.size);
+
+                SpatialRelation? relation = TryParseRelation(response.relation);
+                PrimitiveShape? referenceShape = null;
+                if (relation.HasValue && TryParseShape(response.reference_shape, out var refShape))
+                    referenceShape = refShape;
+
+                onComplete?.Invoke(new SpawnIntent(shape, color, scale, relation, referenceShape), null, null, elapsedMs, null);
+                yield break;
+            }
+
+            if (action == "generate")
+            {
+                if (string.IsNullOrWhiteSpace(response.prompt))
+                {
+                    var error = "Backend returned action=generate with no prompt.";
+                    Debug.LogWarning($"[LlmIntentClient] {error}");
+                    onComplete?.Invoke(null, null, null, elapsedMs, error);
+                    yield break;
+                }
+
+                onComplete?.Invoke(null, null, new GenerateIntent(response.prompt.Trim()), elapsedMs, null);
+                yield break;
+            }
+
+            if (TryParseEditAction(action, response, out var editIntent))
+            {
+                onComplete?.Invoke(null, editIntent, null, elapsedMs, null);
+                yield break;
+            }
+
+            var invalidActionError = $"Backend returned invalid action: '{response.action}'";
+            Debug.LogWarning($"[LlmIntentClient] {invalidActionError}");
+            onComplete?.Invoke(null, null, null, elapsedMs, invalidActionError);
+        }
+
+        static bool TryParseShape(string value, out PrimitiveShape shape)
+        {
+            switch (value?.ToLowerInvariant())
+            {
+                case "cube": shape = PrimitiveShape.Cube; return true;
+                case "sphere": shape = PrimitiveShape.Sphere; return true;
+                case "cylinder": shape = PrimitiveShape.Cylinder; return true;
+                case "table": shape = PrimitiveShape.Table; return true;
+                case "shelf": shape = PrimitiveShape.Shelf; return true;
+                case "lamp": shape = PrimitiveShape.LampBase; return true;
+                case "crate": shape = PrimitiveShape.Crate; return true;
+                case "chair": shape = PrimitiveShape.Chair; return true;
+                default: shape = default; return false;
+            }
+        }
+
+        static bool TryParseEditAction(string action, ParseIntentResponseBody response, out EditIntent intent)
+        {
+            switch (action)
+            {
+                case "resize":
+                    var bigger = response.size_delta?.ToLowerInvariant() != "smaller";
+                    intent = new EditIntent(EditAction.Resize, bigger: bigger);
+                    return true;
+                case "recolor":
+                    ColorNaming.TryGetColor(response.color, out var color);
+                    intent = new EditIntent(EditAction.Recolor, color: color);
+                    return true;
+                case "move":
+                    var moveRelation = TryParseRelation(response.relation);
+                    PrimitiveShape? moveReferenceShape = null;
+                    if (moveRelation.HasValue && TryParseShape(response.reference_shape, out var moveRefShape))
+                        moveReferenceShape = moveRefShape;
+                    intent = new EditIntent(EditAction.Move, relation: moveRelation, referenceShape: moveReferenceShape);
+                    return true;
+                case "rotate":
+                    intent = new EditIntent(EditAction.Rotate);
+                    return true;
+                case "duplicate":
+                    intent = new EditIntent(EditAction.Duplicate);
+                    return true;
+                case "delete":
+                    intent = new EditIntent(EditAction.Delete);
+                    return true;
+                default:
+                    intent = default;
+                    return false;
+            }
+        }
+
+        static float ParseSize(string value) => value?.ToLowerInvariant() switch
+        {
+            "small" => VoiceIntentParser.SmallScale,
+            "large" => VoiceIntentParser.BigScale,
+            _ => VoiceIntentParser.DefaultScale,
+        };
+
+        static SpatialRelation? TryParseRelation(string value) => value?.ToLowerInvariant() switch
+        {
+            "on" => SpatialRelation.On,
+            "next_to" => SpatialRelation.NextTo,
+            "on_ground" => SpatialRelation.OnGround,
+            _ => null,
+        };
+    }
+}
