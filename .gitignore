@@ -105,3 +105,15 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# Python backend (Stage 2+)
+Backend/__pycache__/
+Backend/.venv/
+Backend/*.pyc
+Backend/.env
+
+# Contains a real Wit.ai client access token in plaintext -- keep local-only. A fresh
+# checkout will need to recreate this via Meta > Voice SDK > Voice Hub and rewire it in
+# Stage0SceneBuilder's WitConfiguration lookup (or rebuild the scene after adding one).
+Assets/object_spawner_voice.asset
+Assets/object_spawner_voice.asset.meta
