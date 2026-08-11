@@ -146,79 +146,31 @@ namespace ObjectSpawning
             {
                 var mat = r.sharedMaterial;
 
-                // glTFast's own single-mesh import path (GameObjectInstantiator.AddPrimitive)
-                // never sets this -- it only does for the unrelated EXT_mesh_gpu_instancing
-                // codepath (many copies of one mesh). Without it, Single Pass Instanced XR
-                // rendering silently drops the draw call for both eyes: the object still exists
-                // in the scene with a correct transform/bounds/collider, it just never actually
-                // gets painted, which is indistinguishable from "not there" in the headset.
+                // glTFast's own single-mesh import path never enables GPU instancing on its
+                // materials, which Single Pass Instanced XR rendering depends on to draw both
+                // eyes in one pass -- without it the object exists in the scene with a correct
+                // transform/bounds/collider but never actually gets painted.
                 if (mat != null)
                     mat.enableInstancing = true;
 
-                // Diagnostic: source glTF materials from Tripo3D come back "doubleSided": false,
-                // i.e. back-face culled. If glTFast's right-handed-Y-up -> left-handed-Y-up
-                // conversion has any winding-order mismatch with how Tripo3D exports triangles,
-                // every face would get culled from every possible viewing angle -- invisible from
-                // any direction, zero GPU cost, unrelated to material/texture/stereo settings,
-                // which fits every symptom seen so far better than anything else tried. Forcing
-                // Cull Off tests that directly and, if it works, is a fine permanent fix for these
-                // small single-object props (no meaningful perf cost, no adjacent geometry to
-                // benefit from back-face culling anyway).
+                // Source materials come back single-sided; force double-sided rendering so a
+                // winding-order mismatch between glTF's and Unity's coordinate handedness can't
+                // back-face-cull an entire generated mesh from every angle.
                 if (mat != null && mat.HasProperty("_Cull"))
-                {
                     mat.SetFloat("_Cull", (float)UnityEngine.Rendering.CullMode.Off);
-                    Debug.Log($"[GeneratedMeshImporter] Forced _Cull=Off on '{r.name}'.");
-                }
 
-                // Defensive cleanup pass -- none of these have been confirmed as the actual cause,
-                // but each is a cheap, safe no-op if it isn't the problem, and covers ground the
-                // targeted tests so far couldn't reach in one go:
-                //  - isStatic can make a runtime-spawned object interact with batching/occlusion
-                //    systems that never knew it existed at bake time (this project has no baked
-                //    occlusion data, so low-odds, but free to rule out).
-                //  - forceRenderingOff is a direct "never draw this" switch; nothing in our code
-                //    sets it, but neither does anything guarantee glTFast doesn't.
-                //  - an LODGroup culling the object at this screen size would look exactly like
-                //    this; glTFast isn't expected to add one, but cheap to strip if present.
+                // Defensive: a runtime-spawned object should never end up static (no baked
+                // occlusion data exists to interact with anyway), force-hidden, or LOD-culled --
+                // none of these are things our own code sets, but nothing guarantees glTFast doesn't.
                 r.gameObject.isStatic = false;
                 r.forceRenderingOff = false;
                 if (r.gameObject.TryGetComponent<LODGroup>(out var lodGroup))
-                {
-                    Debug.LogWarning($"[GeneratedMeshImporter] Removing unexpected LODGroup on '{r.name}'.");
                     UnityEngine.Object.Destroy(lodGroup);
-                }
 
-                Debug.Log($"[GeneratedMeshImporter] Renderer '{r.name}' enabled={r.enabled} " +
-                    $"activeInHierarchy={r.gameObject.activeInHierarchy} " +
-                    $"shader={(mat != null ? mat.shader?.name : "null")} " +
-                    $"instancing={(mat != null ? mat.enableInstancing : false)} bounds={r.bounds}");
-
-                // The "Loaded: ... images=0" line logged earlier has shown 0 on every device
-                // test so far despite the source GLB genuinely declaring 3 images -- checking
-                // whether the material's actual bound texture slots are null narrows down
-                // whether that's a real failed-texture-load bug (which could plausibly zero out
-                // an alpha channel and render the whole surface fully transparent) or just a
-                // count read at the wrong point in glTFast's load sequence.
-                if (mat != null)
-                {
-                    foreach (var propName in mat.GetTexturePropertyNames())
-                    {
-                        var tex = mat.GetTexture(propName);
-                        Debug.Log($"[GeneratedMeshImporter]   texture prop '{propName}' = " +
-                            $"{(tex != null ? $"{tex.width}x{tex.height}" : "NULL")}");
-                    }
-                    Debug.Log($"[GeneratedMeshImporter]   color={mat.color} " +
-                        $"renderQueue={mat.renderQueue} alphaClip={(mat.HasProperty("_AlphaClip") ? mat.GetFloat("_AlphaClip").ToString() : "n/a")}");
-                }
-
-                // Every material/shader/culling/stereo-rendering angle on glTFast's own Shader
-                // Graph material has been tried and none of them made the object visible, despite
-                // the material, textures and mesh data all independently checking out as valid --
-                // pointing at the compiled shader program itself failing on this device/driver in
-                // a way no material property can work around. Rebuilding the visible material from
-                // Universal Render Pipeline/Lit -- the exact shader every other spawned object in
-                // this project already renders correctly with -- sidesteps glTFast's shader
-                // entirely rather than trying to fix whatever is wrong with it.
+                // glTFast's own Shader Graph material reliably failed to render on-device despite
+                // the mesh/material/texture data all checking out as valid. Rebuild the visible
+                // material from Universal Render Pipeline/Lit instead -- the same shader every
+                // other spawned object in this project already renders correctly with.
                 if (mat != null)
                 {
                     var urpLitShader = Shader.Find("Universal Render Pipeline/Lit");
@@ -229,60 +181,17 @@ namespace ObjectSpawning
                         if (baseColorTex != null && replacement.HasProperty("_BaseMap"))
                             replacement.SetTexture("_BaseMap", baseColorTex);
                         r.sharedMaterial = replacement;
-                        Debug.Log($"[GeneratedMeshImporter] Replaced material on '{r.name}' with URP/Lit " +
-                            $"(baseColorTex={(baseColorTex != null ? "applied" : "none")}).");
                     }
                 }
 
-                // renderer.bounds may just reflect the glTF accessor's declared min/max metadata
-                // rather than the real uploaded vertex data -- everything checked so far (bounds,
-                // triangle count, collider) is consistent with that metadata being fine even if
-                // the actual vertex buffer is degenerate or NaN. Reading the raw array directly
-                // is the one thing that can't lie about that.
+                // Rebuilt via Unity's classic high-level Mesh API rather than trusting glTFast's
+                // low-level buffer-based construction, which has strict stream layout
+                // requirements that are easy to get subtly wrong.
                 var mesh = r is SkinnedMeshRenderer smr ? smr.sharedMesh
                     : r.GetComponent<MeshFilter>()?.sharedMesh;
                 if (mesh != null)
                 {
                     var verts = mesh.vertices;
-                    var nanOrInfCount = 0;
-                    var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                    var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                    foreach (var v in verts)
-                    {
-                        if (float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) ||
-                            float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z))
-                        {
-                            nanOrInfCount++;
-                            continue;
-                        }
-                        min = Vector3.Min(min, v);
-                        max = Vector3.Max(max, v);
-                    }
-                    Debug.Log($"[GeneratedMeshImporter] Raw mesh '{mesh.name}': type={r.GetType().Name} " +
-                        $"vertexCount={verts.Length} nanOrInf={nanOrInfCount} " +
-                        $"rawLocalMin={min} rawLocalMax={max} " +
-                        $"sample[0]={(verts.Length > 0 ? verts[0].ToString() : "n/a")} " +
-                        $"sample[mid]={(verts.Length > 0 ? verts[verts.Length / 2].ToString() : "n/a")}");
-
-                    // >65535 vertices requires 32-bit indices -- if glTFast didn't set this
-                    // correctly for a mesh this large, that alone could silently fail to render.
-                    Debug.Log($"[GeneratedMeshImporter] Mesh format: indexFormat={mesh.indexFormat} " +
-                        $"subMeshCount={mesh.subMeshCount} " +
-                        $"topology={(mesh.subMeshCount > 0 ? mesh.GetTopology(0).ToString() : "n/a")} " +
-                        $"indexCount={(mesh.subMeshCount > 0 ? mesh.GetIndexCount(0).ToString() : "n/a")} " +
-                        $"meshBounds(center={mesh.bounds.center}, size={mesh.bounds.size}) " +
-                        $"isReadable={mesh.isReadable} normalsCount={mesh.normals.Length} " +
-                        $"tangentsCount={mesh.tangents.Length} uvCount={mesh.uv.Length}");
-
-                    // glTFast builds its meshes through Unity's low-level SetVertexBufferParams /
-                    // SetIndexBufferParams API, which has strict, easy-to-get-subtly-wrong stream
-                    // layout requirements. Everything read back from the managed side (vertices,
-                    // bounds, normals, uv) has checked out as valid on every test so far, but that
-                    // reads Unity's CPU-side cache -- it can't rule out the actual GPU-uploaded
-                    // buffer being malformed in a way that's invisible to script. Rebuilding via
-                    // the classic high-level Mesh API (the same simple path every basic Unity mesh
-                    // has always used) sidesteps that possibility entirely rather than trying to
-                    // prove or disprove it.
                     var freshMesh = new Mesh
                     {
                         name = mesh.name + "_rebuilt",
@@ -302,16 +211,10 @@ namespace ObjectSpawning
                         skinned.sharedMesh = freshMesh;
                     else if (r.TryGetComponent<MeshFilter>(out var meshFilterComp))
                         meshFilterComp.sharedMesh = freshMesh;
-
-                    Debug.Log($"[GeneratedMeshImporter] Rebuilt mesh via classic API: " +
-                        $"vertexCount={freshMesh.vertexCount} triCount={freshMesh.triangles.Length / 3} " +
-                        $"bounds(center={freshMesh.bounds.center}, size={freshMesh.bounds.size})");
-                }
-                else
-                {
-                    Debug.LogWarning($"[GeneratedMeshImporter] No MeshFilter/SkinnedMeshRenderer sharedMesh found on '{r.name}'.");
                 }
             }
+
+            Debug.Log($"[GeneratedMeshImporter] Normalized {renderers.Length} renderer(s).");
 
             var bounds = ComputeBounds(renderers);
             Debug.Log($"[GeneratedMeshImporter] Raw bounds: center={bounds.center} size={bounds.size}");
