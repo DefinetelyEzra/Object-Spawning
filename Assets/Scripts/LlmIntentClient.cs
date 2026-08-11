@@ -30,14 +30,17 @@ namespace ObjectSpawning
         class ParseIntentResponseBody
         {
             public bool recognized;
-            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear
             public string shape;       // create only
             public string prompt;      // generate only
             public string color;       // create or recolor
             public string size;        // create only (absolute)
             public string size_delta;  // resize only ("bigger" | "smaller")
-            public string relation;        // create only ("on" | "next_to")
-            public string reference_shape; // create only, only with relation set
+            public string relation;        // create or move ("on" | "next_to" | "on_ground")
+            public string reference_shape; // create or move, only with relation set
+            public float distance_meters;  // move only, paired with direction -- 0 means unset (JsonUtility has no nullable float, and no one asks to move 0 meters)
+            public string direction;       // move only ("left" | "right" | "forward" | "backward" | "up" | "down")
+            public float degrees;          // rotate only -- same 0-means-unset reasoning (a 0-degree rotate request isn't a real command)
         }
 
         // At most one of spawnIntent/editIntent/generateIntent is non-null. All three null means
@@ -174,6 +177,9 @@ namespace ObjectSpawning
                 case "lamp": shape = PrimitiveShape.LampBase; return true;
                 case "crate": shape = PrimitiveShape.Crate; return true;
                 case "chair": shape = PrimitiveShape.Chair; return true;
+                case "stool": shape = PrimitiveShape.Stool; return true;
+                case "bench": shape = PrimitiveShape.Bench; return true;
+                case "sofa": shape = PrimitiveShape.Sofa; return true;
                 default: shape = default; return false;
             }
         }
@@ -191,6 +197,20 @@ namespace ObjectSpawning
                     intent = new EditIntent(EditAction.Recolor, color: color);
                     return true;
                 case "move":
+                    // A direction alone wins over relation-based placement -- distance_meters is
+                    // a refinement when the LLM captured a specific number, not a requirement, so
+                    // "move it left" (no distance mentioned) doesn't silently fall through to
+                    // unrelated default placement instead of actually moving left.
+                    if (TryParseDirection(response.direction, out var moveDirection))
+                    {
+                        var moveDistance = response.distance_meters != 0f
+                            ? response.distance_meters
+                            : VoiceIntentParser.DefaultMoveDistanceMeters;
+                        intent = new EditIntent(EditAction.Move,
+                            moveDistanceMeters: moveDistance, moveDirection: moveDirection);
+                        return true;
+                    }
+
                     var moveRelation = TryParseRelation(response.relation);
                     PrimitiveShape? moveReferenceShape = null;
                     if (moveRelation.HasValue && TryParseShape(response.reference_shape, out var moveRefShape))
@@ -198,7 +218,10 @@ namespace ObjectSpawning
                     intent = new EditIntent(EditAction.Move, relation: moveRelation, referenceShape: moveReferenceShape);
                     return true;
                 case "rotate":
-                    intent = new EditIntent(EditAction.Rotate);
+                    // 0 means the LLM left it unset (no one asks to rotate 0 degrees) -- caller
+                    // applies the old fixed-default rotation in that case.
+                    var rotateDegrees = response.degrees != 0f ? (float?)response.degrees : null;
+                    intent = new EditIntent(EditAction.Rotate, rotateDegrees: rotateDegrees);
                     return true;
                 case "duplicate":
                     intent = new EditIntent(EditAction.Duplicate);
@@ -206,9 +229,26 @@ namespace ObjectSpawning
                 case "delete":
                     intent = new EditIntent(EditAction.Delete);
                     return true;
+                case "clear":
+                    intent = new EditIntent(EditAction.ClearAll);
+                    return true;
                 default:
                     intent = default;
                     return false;
+            }
+        }
+
+        static bool TryParseDirection(string value, out MoveDirection direction)
+        {
+            switch (value?.ToLowerInvariant())
+            {
+                case "left": direction = MoveDirection.Left; return true;
+                case "right": direction = MoveDirection.Right; return true;
+                case "forward": direction = MoveDirection.Forward; return true;
+                case "backward": direction = MoveDirection.Backward; return true;
+                case "up": direction = MoveDirection.Up; return true;
+                case "down": direction = MoveDirection.Down; return true;
+                default: direction = default; return false;
             }
         }
 

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using UnityEngine;
 
 namespace ObjectSpawning
@@ -19,7 +21,23 @@ namespace ObjectSpawning
         LampBase,
         Crate,
         Chair,
+        Stool,
+        Bench,
+        Sofa,
         Generated,
+    }
+
+    // Move-by-distance ("move it 3 meters to the left"), relative to the PLAYER's current
+    // flattened facing direction -- not the object's own orientation, and not world axes, since
+    // "left" only means something intuitive relative to whoever's giving the command.
+    public enum MoveDirection
+    {
+        Left,
+        Right,
+        Forward,
+        Backward,
+        Up,
+        Down,
     }
 
     // Stage 6: a request for a real generated mesh (via Tripo3D) rather than the fixed
@@ -73,6 +91,7 @@ namespace ObjectSpawning
         Rotate,
         Duplicate,
         Delete,
+        ClearAll,
     }
 
     public readonly struct EditIntent
@@ -83,14 +102,29 @@ namespace ObjectSpawning
         public readonly SpatialRelation? Relation;       // only meaningful for Move
         public readonly PrimitiveShape? ReferenceShape;  // only meaningful for Move
 
+        // Move-by-distance ("move it 3 meters to the left") -- an alternative to Relation for
+        // Move, not a combination of the two. Both set means "use the distance/direction move";
+        // only Relation set means the existing on/next_to/on_ground placement.
+        public readonly float? MoveDistanceMeters;
+        public readonly MoveDirection? MoveDirectionValue;
+
+        // Rotate-by-degrees ("rotate it 180 degrees") -- null means "no specific amount given",
+        // which callers should treat as the old fixed single-press default.
+        public readonly float? RotateDegrees;
+
         public EditIntent(EditAction action, Color color = default, bool bigger = true,
-            SpatialRelation? relation = null, PrimitiveShape? referenceShape = null)
+            SpatialRelation? relation = null, PrimitiveShape? referenceShape = null,
+            float? moveDistanceMeters = null, MoveDirection? moveDirection = null,
+            float? rotateDegrees = null)
         {
             Action = action;
             Color = color;
             Bigger = bigger;
             Relation = relation;
             ReferenceShape = referenceShape;
+            MoveDistanceMeters = moveDistanceMeters;
+            MoveDirectionValue = moveDirection;
+            RotateDegrees = rotateDegrees;
         }
     }
 
@@ -101,6 +135,10 @@ namespace ObjectSpawning
         public const float DefaultScale = 0.2f;
         public const float BigScale = 0.5f;
         public const float SmallScale = 0.08f;
+
+        // Applied when a move command names a direction but no explicit distance ("move it
+        // left") -- a reasonable single nudge, distinct from a number the user actually said.
+        public const float DefaultMoveDistanceMeters = 0.3f;
 
         static readonly (string keyword, PrimitiveShape shape)[] ShapeKeywords =
         {
@@ -116,6 +154,10 @@ namespace ObjectSpawning
             ("lamp", PrimitiveShape.LampBase),
             ("crate", PrimitiveShape.Crate),
             ("chair", PrimitiveShape.Chair),
+            ("stool", PrimitiveShape.Stool),
+            ("bench", PrimitiveShape.Bench),
+            ("sofa", PrimitiveShape.Sofa),
+            ("couch", PrimitiveShape.Sofa),
         };
 
         public static bool TryParse(string transcript, out SpawnIntent intent)
@@ -214,6 +256,11 @@ namespace ObjectSpawning
 
         static readonly (string keyword, EditAction action)[] EditActionKeywords =
         {
+            // Checked before plain "delete"/"remove" would otherwise just target the current
+            // edit target -- "clear"/"reset" mean the whole room, not one object, and exhibition
+            // demo resets need this to be unambiguous.
+            ("clear", EditAction.ClearAll),
+            ("reset", EditAction.ClearAll),
             ("delete", EditAction.Delete),
             ("remove", EditAction.Delete),
             ("duplicate", EditAction.Duplicate),
@@ -244,6 +291,8 @@ namespace ObjectSpawning
                 "bigger", "larger", "grow", "smaller", "shrink",
                 "big", "large", "small", "tiny",
                 "next", "onto", "ground", "floor",
+                "left", "right", "forward", "ahead", "backward", "back", "up", "down",
+                "meters", "meter", "degrees", "degree", "clockwise", "counterclockwise", "around",
             });
             return words.ToArray();
         }
@@ -279,12 +328,44 @@ namespace ObjectSpawning
                 {
                     if (action == EditAction.Move)
                     {
-                        // "move it to the ground" / "move it onto the table" / "move it next to
-                        // the shelf" -- reuses the same relation scan as create, with no primary
-                        // shape to anchor against (there's no new object here, just the edit
-                        // target), so any relation keyword position qualifies.
-                        var (relation, referenceShape) = TryFindSpatialRelation(text, -1);
-                        intent = new EditIntent(action, relation: relation, referenceShape: referenceShape);
+                        // A direction word alone ("move it left") wins over relation-based
+                        // placement -- distance is a bonus refinement when a number is also
+                        // present ("move it 3 meters to the left"), not a requirement, so a
+                        // bare direction doesn't fall through to unrelated default placement.
+                        // Only reliably catches digit-form numbers ("3", not "three") -- this is
+                        // the dumb local fallback; the backend LLM handles spoken-word numbers.
+                        if (TryFindDirection(text, out var direction))
+                        {
+                            var distance = TryFindNumber(text, out var num) ? num : DefaultMoveDistanceMeters;
+                            intent = new EditIntent(action, moveDistanceMeters: distance, moveDirection: direction);
+                        }
+                        else
+                        {
+                            // "move it to the ground" / "move it onto the table" / "move it next
+                            // to the shelf" -- reuses the same relation scan as create, with no
+                            // primary shape to anchor against (there's no new object here, just
+                            // the edit target), so any relation keyword position qualifies.
+                            var (relation, referenceShape) = TryFindSpatialRelation(text, -1);
+                            intent = new EditIntent(action, relation: relation, referenceShape: referenceShape);
+                        }
+                    }
+                    else if (action == EditAction.Rotate)
+                    {
+                        // "rotate it 180 degrees" -> that many degrees. "turn it around"/"flip
+                        // it" -> a half turn. Plain "rotate it"/"turn it" with no amount keeps
+                        // the old fixed default (null -- caller decides the default). "left"/
+                        // "counterclockwise" negates the sign; otherwise it's clockwise (viewed
+                        // from above), matching the backend's own convention.
+                        float? degrees = null;
+                        if (TryFindNumber(text, out var deg))
+                            degrees = deg;
+                        else if (ContainsWord(text, "around") || ContainsWord(text, "flip"))
+                            degrees = 180f;
+
+                        if (degrees.HasValue && (ContainsWord(text, "left") || ContainsWord(text, "counterclockwise")))
+                            degrees = -degrees.Value;
+
+                        intent = new EditIntent(action, rotateDegrees: degrees);
                     }
                     else
                     {
@@ -294,6 +375,41 @@ namespace ObjectSpawning
                 }
             }
 
+            return false;
+        }
+
+        static readonly (string keyword, MoveDirection direction)[] DirectionKeywords =
+        {
+            ("left", MoveDirection.Left),
+            ("right", MoveDirection.Right),
+            ("forward", MoveDirection.Forward),
+            ("ahead", MoveDirection.Forward),
+            ("backward", MoveDirection.Backward),
+            ("back", MoveDirection.Backward),
+            ("up", MoveDirection.Up),
+            ("down", MoveDirection.Down),
+        };
+
+        static bool TryFindDirection(string text, out MoveDirection direction)
+        {
+            foreach (var (keyword, dir) in DirectionKeywords)
+            {
+                if (ContainsWord(text, keyword))
+                {
+                    direction = dir;
+                    return true;
+                }
+            }
+            direction = default;
+            return false;
+        }
+
+        static bool TryFindNumber(string text, out float value)
+        {
+            var match = Regex.Match(text, @"\d+(\.\d+)?");
+            if (match.Success && float.TryParse(match.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                return true;
+            value = 0f;
             return false;
         }
 

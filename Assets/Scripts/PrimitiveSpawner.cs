@@ -68,7 +68,8 @@ namespace ObjectSpawning
             Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, 0.2f));
 
         static bool IsComposite(PrimitiveShape shape) => shape is PrimitiveShape.Table
-            or PrimitiveShape.Shelf or PrimitiveShape.LampBase or PrimitiveShape.Crate or PrimitiveShape.Chair;
+            or PrimitiveShape.Shelf or PrimitiveShape.LampBase or PrimitiveShape.Crate or PrimitiveShape.Chair
+            or PrimitiveShape.Stool or PrimitiveShape.Bench or PrimitiveShape.Sofa;
 
         public GameObject Spawn(SpawnIntent intent)
         {
@@ -108,6 +109,7 @@ namespace ObjectSpawning
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
             Debug.Log($"[PrimitiveSpawner] Spawned {intent.Shape} #{SpawnCount} at {position}");
+            StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
             return go;
         }
 
@@ -121,7 +123,7 @@ namespace ObjectSpawning
             go.transform.localScale = Vector3.one * VoiceIntentParser.DefaultScale;
             go.name = $"Generating_{SpawnCount}";
 
-            var position = GetSpawnPosition();
+            var position = ComputeOnGroundPosition(go, GetSpawnPosition(), GetFloorY());
             go.transform.SetPositionAndRotation(position, Quaternion.identity);
 
             ApplyColor(go, GeneratingPlaceholderColor);
@@ -131,6 +133,7 @@ namespace ObjectSpawning
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
             Debug.Log($"[PrimitiveSpawner] Generating placeholder spawned for prompt=\"{prompt}\".");
+            StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
 
             if (meshGenerationClient != null)
             {
@@ -244,6 +247,34 @@ namespace ObjectSpawning
 
             LastTouchedGameObject = placeholder;
             Debug.Log($"[PrimitiveSpawner] Swapped generated mesh onto {placeholder.name}.");
+
+            // Collider above is already sized to the mesh's true final bounds, so selection/
+            // interaction works immediately -- only the visual scale animates in.
+            StartCoroutine(AnimateScaleIn(importedRoot.transform, importedRoot.transform.localScale));
+        }
+
+        // Scales an object up from nothing over a short, cheap ease-out -- a single Vector3 lerp
+        // per frame for a fraction of a second, negligible cost -- so new objects visibly appear
+        // rather than blink into existence. Bails cleanly if the object is destroyed mid-animation
+        // (e.g. a quick delete right after spawning).
+        static IEnumerator AnimateScaleIn(Transform t, Vector3 targetScale, float duration = 0.25f)
+        {
+            if (t == null)
+                yield break;
+
+            t.localScale = Vector3.zero;
+            var elapsed = 0f;
+            while (elapsed < duration)
+            {
+                if (t == null)
+                    yield break;
+                elapsed += Time.deltaTime;
+                var eased = 1f - Mathf.Pow(1f - Mathf.Clamp01(elapsed / duration), 3f);
+                t.localScale = targetScale * eased;
+                yield return null;
+            }
+            if (t != null)
+                t.localScale = targetScale;
         }
 
         void Register(GameObject go, PrimitiveShape shape)
@@ -263,8 +294,11 @@ namespace ObjectSpawning
         Vector3 ResolvePlacement(GameObject obj, SpatialRelation? relation, PrimitiveShape? referenceShape,
             GameObject excludeFromReference)
         {
+            // No relation specified ("spawn a cube") now defaults to floor level rather than
+            // floating at head height -- reuses the same on-ground math "put it on the ground"
+            // already used, just applied unconditionally instead of only when asked for.
             if (!relation.HasValue)
-                return GetSpawnPosition();
+                return ComputeOnGroundPosition(obj, GetSpawnPosition(), GetFloorY());
 
             if (relation.Value == SpatialRelation.OnGround)
                 return ComputeOnGroundPosition(obj, GetSpawnPosition(), GetFloorY());
@@ -401,27 +435,68 @@ namespace ObjectSpawning
             Debug.Log($"[PrimitiveSpawner] Recolored {target.name}.");
         }
 
-        // Relation/referenceShape unset ("move it here") just moves to the default in-front-of-user
-        // spot, same as before Stage 5 added relations. With them set ("move it onto the table",
-        // "move it to the ground"), reuses the exact same placement math Spawn uses for create.
-        public void Move(GameObject target, SpatialRelation? relation = null, PrimitiveShape? referenceShape = null)
+        // Stage "advanced instructions": distanceMeters+direction ("move it 3 meters to the
+        // left") is an alternative to relation-based placement, not a combination -- when both
+        // are given, the distance/direction move wins. With neither, relation/referenceShape
+        // unset ("move it here") just moves to the default in-front-of-user spot, same as before
+        // Stage 5 added relations. With relation set ("move it onto the table", "move it to the
+        // ground"), reuses the exact same placement math Spawn uses for create.
+        public void Move(GameObject target, SpatialRelation? relation = null, PrimitiveShape? referenceShape = null,
+            float? distanceMeters = null, MoveDirection? direction = null)
         {
             if (target == null)
                 return;
+
+            if (distanceMeters.HasValue && direction.HasValue)
+            {
+                target.transform.position += ComputeDirectionalOffset(direction.Value, distanceMeters.Value);
+                LastTouchedGameObject = target;
+                Debug.Log($"[PrimitiveSpawner] Moved {target.name} {distanceMeters.Value:0.##}m {direction.Value}.");
+                return;
+            }
 
             target.transform.position = ResolvePlacement(target, relation, referenceShape, excludeFromReference: target);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Moved {target.name}.");
         }
 
-        public void Rotate(GameObject target)
+        // Left/right/forward/backward are relative to the PLAYER's current flattened facing
+        // direction (matching how the default spawn position already resolves), not the target
+        // object's own orientation -- "move it to the left" only means something intuitive
+        // relative to whoever's giving the command. Up/down are plain world-space.
+        Vector3 ComputeDirectionalOffset(MoveDirection direction, float meters)
+        {
+            var flatForward = headTransform != null
+                ? Vector3.ProjectOnPlane(headTransform.forward, Vector3.up)
+                : Vector3.forward;
+            if (flatForward.sqrMagnitude < 0.001f)
+                flatForward = Vector3.forward;
+            flatForward.Normalize();
+            var flatRight = Vector3.Cross(Vector3.up, flatForward);
+
+            return direction switch
+            {
+                MoveDirection.Forward => flatForward * meters,
+                MoveDirection.Backward => -flatForward * meters,
+                MoveDirection.Right => flatRight * meters,
+                MoveDirection.Left => -flatRight * meters,
+                MoveDirection.Up => Vector3.up * meters,
+                MoveDirection.Down => Vector3.down * meters,
+                _ => Vector3.zero,
+            };
+        }
+
+        // degrees defaults to a single fixed-size turn (the old always-90-degrees behavior) when
+        // the caller has no specific amount to give ("rotate it" with no number). A specific
+        // amount ("rotate it 180 degrees") overrides that entirely, sign and all.
+        public void Rotate(GameObject target, float degrees = 90f)
         {
             if (target == null)
                 return;
 
-            target.transform.Rotate(Vector3.up, 90f, Space.World);
+            target.transform.Rotate(Vector3.up, degrees, Space.World);
             LastTouchedGameObject = target;
-            Debug.Log($"[PrimitiveSpawner] Rotated {target.name}.");
+            Debug.Log($"[PrimitiveSpawner] Rotated {target.name} by {degrees:0.##} degrees.");
         }
 
         public GameObject Duplicate(GameObject target)
@@ -466,6 +541,40 @@ namespace ObjectSpawning
 
             Debug.Log($"[PrimitiveSpawner] Deleted {target.name}.");
             DestroyObject(target);
+        }
+
+        // Exhibition-facing bulk reset ("clear the room" / "reset the room"), so staff can wipe
+        // the scene between visitors instead of deleting objects one at a time. Any placeholder
+        // destroyed here mid-generation is discarded harmlessly by RunGeneration's own
+        // "placeholder == null" check once that request eventually completes.
+        public void ClearAll()
+        {
+            var targets = new List<GameObject>(registry.Values);
+            var count = 0;
+            foreach (var go in targets)
+            {
+                if (go == null)
+                    continue;
+                DestroyObject(go);
+                count++;
+            }
+
+            registry.Clear();
+            LastTouchedGameObject = null;
+            SpawnCount = 0;
+            LastGenerationError = "";
+
+            Debug.Log($"[PrimitiveSpawner] Cleared {count} object(s).");
+        }
+
+        // Exposed for the exhibition scene's spawn-preview marker: X/Z from the current look
+        // direction, snapped straight to floor height for display -- a flat floor marker doesn't
+        // need ComputeOnGroundPosition's per-object pivot correction, it just needs to sit on the
+        // floor at the spot a new object's footprint would center on.
+        public Vector3 GetSpawnPreviewPosition()
+        {
+            var raw = GetSpawnPosition();
+            return new Vector3(raw.x, GetFloorY(), raw.z);
         }
 
         // Destroy() only works in Play Mode; Edit Mode (including tests) requires DestroyImmediate.

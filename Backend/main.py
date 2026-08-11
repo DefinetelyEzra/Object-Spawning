@@ -70,27 +70,31 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             ),
             "action": types.Schema(
                 type="STRING",
-                enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate", "delete"],
+                enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate", "delete", "clear"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
-                             "shape library -- set prompt instead of shape. The other actions "
-                             "edit whatever object the user is currently pointing at, or the "
-                             "last one they created or touched if they aren't pointing at "
-                             "anything -- do NOT try to figure out which object from the "
-                             "transcript's wording, that's resolved elsewhere. Default to "
-                             "'create' if omitted.",
+                             "shape library -- set prompt instead of shape. 'clear' wipes every "
+                             "spawned object and resets the room ('clear the room', 'clear "
+                             "everything', 'reset', 'start over') -- takes no other fields. The "
+                             "remaining actions edit whatever object the user is currently "
+                             "pointing at, or the last one they created or touched if they "
+                             "aren't pointing at anything -- do NOT try to figure out which "
+                             "object from the transcript's wording, that's resolved elsewhere. "
+                             "Default to 'create' if omitted.",
             ),
             "shape": types.Schema(
                 type="STRING",
-                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair"],
+                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair",
+                      "stool", "bench", "sofa"],
                 description="Only for action=create. The object requested. Map related words: "
                              "box/block->cube, ball/orb/globe->sphere, tube/pipe/can->cylinder, "
                              "desk->table, bookshelf/bookcase->shelf, lamp/lantern->lamp, "
-                             "container->crate, seat->chair. Note 'box' means the cube "
-                             "primitive, not crate -- only the word 'crate' itself maps to crate. "
-                             "If the requested object doesn't reasonably map to any of these, "
-                             "use action=generate with 'prompt' instead -- don't force a mismatch.",
+                             "container->crate, seat->chair, couch->sofa. Note 'box' means the "
+                             "cube primitive, not crate -- only the word 'crate' itself maps to "
+                             "crate. If the requested object doesn't reasonably map to any of "
+                             "these, use action=generate with 'prompt' instead -- don't force a "
+                             "mismatch.",
             ),
             "prompt": types.Schema(
                 type="STRING",
@@ -125,24 +129,67 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                 type="STRING",
                 enum=["on", "next_to", "on_ground"],
                 description="For action=create OR action=move. Set when the user describes where "
-                             "to place the object. 'on' and 'next_to' are relative to an EXISTING "
-                             "OBJECT (e.g. 'put a lamp ON the table' -> on, 'move it NEXT TO the "
-                             "shelf' -> next_to) -- also set reference_shape for these two. "
-                             "'on_ground' is for the floor/ground itself ('put it on the ground', "
-                             "'move it to the floor') -- the floor isn't a spawnable object, so "
-                             "leave reference_shape unset for on_ground. Omit relation entirely if "
-                             "no placement was mentioned -- for create the client places the object "
-                             "in front of the user by default, for move it uses the same default.",
+                             "to place the object RELATIVE TO ANOTHER OBJECT OR THE FLOOR, not a "
+                             "specific distance -- for a specific distance+direction on a move "
+                             "command ('move it 3 meters to the left'), use distance_meters and "
+                             "direction instead, and leave this unset. 'on' and 'next_to' are "
+                             "relative to an EXISTING OBJECT (e.g. 'put a lamp ON the table' -> "
+                             "on, 'move it NEXT TO the shelf' -> next_to) -- also set "
+                             "reference_shape for these two. 'on_ground' is for the floor/ground "
+                             "itself ('put it on the ground', 'move it to the floor') -- the "
+                             "floor isn't a spawnable object, so leave reference_shape unset for "
+                             "on_ground. Omit relation entirely if no placement was mentioned -- "
+                             "for create the client places the object in front of the user by "
+                             "default, for move it uses the same default.",
             ),
             "reference_shape": types.Schema(
                 type="STRING",
-                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair"],
+                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair",
+                      "stool", "bench", "sofa"],
                 description="Only for relation=on or relation=next_to. The type of the existing "
                              "object being referenced (e.g. 'table' in 'put a lamp on the table', "
                              "'move it onto the table'). If several objects of that type exist, the "
                              "client resolves which specific one -- do not try to disambiguate "
                              "instances yourself. Leave unset for relation=on_ground (the ground "
                              "isn't a spawnable shape).",
+            ),
+            "direction": types.Schema(
+                type="STRING",
+                enum=["left", "right", "forward", "backward", "up", "down"],
+                description="Only for action=move, when the user names a direction to move the "
+                             "object -- WITH or WITHOUT a specific distance ('move it left' -> "
+                             "set direction=left with no distance_meters; 'move it 3 meters to "
+                             "the left' -> set both). The client applies a sensible default nudge "
+                             "distance when none is given, so set this whenever a direction word "
+                             "is present -- don't withhold it just because there's no number. "
+                             "Direction is relative to the PLAYER'S own current facing direction "
+                             "(their left/right/forward/backward), never the object's own "
+                             "orientation. Map: 'ahead'/'in front' -> forward, 'behind' -> "
+                             "backward, 'above'/'higher' -> up, 'below'/'lower' -> down. Leave "
+                             "unset and use relation/reference_shape instead for placement "
+                             "relative to another object or the floor ('move it onto the "
+                             "table'), or leave everything unset for a plain 'move it here' with "
+                             "no details.",
+            ),
+            "distance_meters": types.Schema(
+                type="NUMBER",
+                description="Only for action=move, paired with direction, and only when the user "
+                             "gives a SPECIFIC distance (e.g. 'move it 3 meters to the left', "
+                             "'move it back half a meter', 'shift it up 2 meters'). Leave unset "
+                             "if they name a direction with no distance ('move it left') -- the "
+                             "client fills in a default in that case, don't guess a number "
+                             "yourself.",
+            ),
+            "degrees": types.Schema(
+                type="NUMBER",
+                description="Only for action=rotate, when the user gives a SPECIFIC rotation "
+                             "amount. Positive rotates clockwise viewed from above, negative "
+                             "counterclockwise -- if they say 'to the left' or "
+                             "'counterclockwise', make the value negative (e.g. 'rotate it 90 "
+                             "degrees to the left' -> -90). 'turn it around' or 'flip it' (no "
+                             "number given) means a half turn -> 180. Leave unset entirely for a "
+                             "plain 'rotate it'/'turn it' with no amount given -- the client "
+                             "applies its own default single-press rotation in that case.",
             ),
         },
         required=["recognized"],
@@ -154,22 +201,34 @@ SYSTEM_PROMPT = (
     "Always call the handle_command function exactly once, with no other text.\n"
     "For create commands (spawn a table, make a red cube, give me a big crate), set action=create "
     "and shape (plus color/size if mentioned). The shape library is ONLY: cube, sphere, cylinder, "
-    "table, shelf, lamp, crate, chair (plus their listed synonyms). If the requested object doesn't "
-    "reasonably match any of those (a gargoyle, a dragon, a sword, a car, a plant -- anything "
-    "genuinely different), set action=generate and prompt instead of shape -- do not force it into "
-    "the nearest shape. If the user describes where to place it relative to an existing object "
-    "('put a lamp on the table', 'place a crate next to the shelf'), also set relation and "
-    "reference_shape (this applies to create only, not generate -- generated objects always spawn "
-    "at the default position). If they mention the ground/floor instead ('put it on the ground', "
-    "'place a crate on the floor'), set relation=on_ground and leave reference_shape unset.\n"
+    "table, shelf, lamp, crate, chair, stool, bench, sofa (plus their listed synonyms). If the "
+    "requested object doesn't reasonably match any of those (a gargoyle, a dragon, a sword, a car, "
+    "a plant -- anything genuinely different), set action=generate and prompt instead of shape -- "
+    "do not force it into the nearest shape. If the user describes where to place it relative to an "
+    "existing object ('put a lamp on the table', 'place a crate next to the shelf'), also set "
+    "relation and reference_shape (this applies to create only, not generate -- generated objects "
+    "always spawn at the default position). If they mention the ground/floor instead ('put it on "
+    "the ground', 'place a crate on the floor'), set relation=on_ground and leave reference_shape "
+    "unset.\n"
     "For edit commands about an existing object ('make it bigger', 'turn it red', 'rotate it', "
     "'duplicate that', 'delete it', 'move it here'), set action to resize/recolor/rotate/duplicate/"
     "delete/move as appropriate. Leave shape unset for edit actions -- which object it applies to "
-    "is resolved elsewhere, not from the transcript's wording. If a move command describes where to "
-    "move it ('move it onto the table', 'move it next to the shelf', 'move it to the ground'), also "
-    "set relation (and reference_shape for on/next_to) exactly as you would for create.\n"
-    "If the transcript doesn't describe either a create, generate, or edit command, set recognized "
-    "to false and omit the other fields."
+    "is resolved elsewhere, not from the transcript's wording. For move: if the user names a "
+    "direction ('move it left', 'move it 3 meters to the left', 'shift it back half a meter'), "
+    "set direction -- and distance_meters too if they gave a specific number, otherwise leave "
+    "distance_meters unset (the client applies its own default nudge distance). If instead they "
+    "describe where to move it relative to another object or the floor ('move it onto the "
+    "table', 'move it next to the shelf', 'move it to the ground'), set relation (and "
+    "reference_shape for on/next_to) exactly as you would for create. A move command should set "
+    "EITHER direction (with or without distance_meters) OR relation, never both -- if the phrase "
+    "gives neither, leave all four unset for the default in-front-of-user move. For rotate: if a "
+    "specific amount is given "
+    "('rotate it 180 degrees', 'turn it 45 degrees to the left', 'flip it around'), set degrees "
+    "per that field's own sign convention; otherwise leave degrees unset.\n"
+    "For 'clear the room', 'clear everything', 'reset', 'start over' (wiping every spawned "
+    "object), set action=clear and no other fields.\n"
+    "If the transcript doesn't describe either a create, generate, edit, or clear command, set "
+    "recognized to false and omit the other fields."
 )
 
 

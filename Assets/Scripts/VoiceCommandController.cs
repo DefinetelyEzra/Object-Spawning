@@ -210,6 +210,15 @@ namespace ObjectSpawning
 
         void ApplyEdit(EditIntent intent)
         {
+            // Unlike every other edit action, ClearAll has no single target -- it should work
+            // even with nothing pointed at or previously touched (e.g. the very first command,
+            // or resetting an already-empty room).
+            if (intent.Action == EditAction.ClearAll)
+            {
+                spawner.ClearAll();
+                return;
+            }
+
             var target = objectSelector != null ? objectSelector.GetPointedAtObject() : null;
             if (target == null)
                 target = spawner.LastTouchedGameObject;
@@ -224,8 +233,11 @@ namespace ObjectSpawning
             {
                 case EditAction.Resize: spawner.Resize(target, intent.Bigger); break;
                 case EditAction.Recolor: spawner.Recolor(target, intent.Color); break;
-                case EditAction.Move: spawner.Move(target, intent.Relation, intent.ReferenceShape); break;
-                case EditAction.Rotate: spawner.Rotate(target); break;
+                case EditAction.Move:
+                    spawner.Move(target, intent.Relation, intent.ReferenceShape,
+                        intent.MoveDistanceMeters, intent.MoveDirectionValue);
+                    break;
+                case EditAction.Rotate: spawner.Rotate(target, intent.RotateDegrees ?? 90f); break;
                 case EditAction.Duplicate: spawner.Duplicate(target); break;
                 case EditAction.Delete: spawner.Delete(target); break;
             }

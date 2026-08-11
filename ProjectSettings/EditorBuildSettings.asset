@@ -6,6 +6,9 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Scenes/Scene1Playground.unity
+    guid: cc1398b28b1274a40a82262ab2412f6e
+  - enabled: 1
     path: Assets/Scenes/Stage0_SilentScaffold.unity
     guid: ec0450a56be8b32439e21a9182970ae3
   - enabled: 1
