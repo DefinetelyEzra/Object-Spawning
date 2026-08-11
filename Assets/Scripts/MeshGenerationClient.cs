@@ -14,7 +14,13 @@ namespace ObjectSpawning
     {
         [SerializeField] string backendUrl = "http://127.0.0.1:8000";
         [SerializeField] float pollIntervalSeconds = 3f;
-        [SerializeField] float maxWaitSeconds = 180f;
+        // Full PBR texture synthesis is the slow part of a Tripo3D generation and varies a lot
+        // with queue load -- observed anywhere from ~80s to over 360s for the same kind of
+        // prompt, with progress climbing steadily the whole time (not stuck/broken, just slow).
+        // Generous on purpose: the placeholder costs nothing to leave sitting there, the scene
+        // stays fully responsive either way, and giving up early just turns a real (already
+        // paid-for) success into a false failure.
+        [SerializeField] float maxWaitSeconds = 600f;
 
         string EffectiveBackendUrl => BackendUrlResolver.Resolve(backendUrl);
 
@@ -34,6 +40,7 @@ namespace ObjectSpawning
         class GenerationStatusResponseBody
         {
             public string stage; // "pending" | "done" | "failed"
+            public int progress; // 0-100, Tripo3D's own last-known progress
             public string final_glb_url;
             public string error;
         }
@@ -41,11 +48,12 @@ namespace ObjectSpawning
         // onComplete(glbUrl, error): on success, the downloadable GLB URL and null error. On
         // failure (request error, backend-reported failure, or timeout), a null URL and a
         // non-empty error describing why. Never throws -- callers can treat this as the single
-        // place generation can go wrong.
-        public void GenerateMesh(string prompt, Action<string, string> onComplete) =>
-            StartCoroutine(GenerateMeshRoutine(prompt, onComplete));
+        // place generation can go wrong. onProgress (optional) fires with 0-100 on every poll
+        // while pending, purely for UI feedback during the wait.
+        public void GenerateMesh(string prompt, Action<string, string> onComplete, Action<int> onProgress = null) =>
+            StartCoroutine(GenerateMeshRoutine(prompt, onComplete, onProgress));
 
-        IEnumerator GenerateMeshRoutine(string prompt, Action<string, string> onComplete)
+        IEnumerator GenerateMeshRoutine(string prompt, Action<string, string> onComplete, Action<int> onProgress)
         {
             var bodyJson = JsonUtility.ToJson(new GenerateMeshRequestBody { prompt = prompt });
             var bodyBytes = Encoding.UTF8.GetBytes(bodyJson);
@@ -119,6 +127,8 @@ namespace ObjectSpawning
                     onComplete?.Invoke(null, "Empty status response from backend.");
                     yield break;
                 }
+
+                onProgress?.Invoke(status.progress);
 
                 if (status.stage == "done")
                 {

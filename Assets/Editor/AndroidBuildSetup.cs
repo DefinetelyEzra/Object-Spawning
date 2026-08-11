@@ -17,6 +17,15 @@ namespace ObjectSpawning.EditorTools
             "Universal Render Pipeline/Lit",
             "Universal Render Pipeline/Simple Lit",
             "Universal Render Pipeline/Unlit",
+
+            // Stage 6: glTFast's ShaderGraphMaterialGenerator looks these up by name at runtime
+            // (Shader.Find("Shader Graphs/glTF-...")) when importing a generated mesh, same as
+            // CreatePrimitive()'s implicit material above -- nothing references them statically,
+            // so without this they get stripped and glTFast throws a NullReferenceException deep
+            // in GenerateDefaultMaterial trying to use the null shader it got back.
+            "Shader Graphs/glTF-pbrMetallicRoughness",
+            "Shader Graphs/glTF-unlit",
+            "Shader Graphs/glTF-pbrSpecularGlossiness",
         };
 
         [MenuItem("Tools/Object Spawning/Stage 1/Configure Android Player Settings")]

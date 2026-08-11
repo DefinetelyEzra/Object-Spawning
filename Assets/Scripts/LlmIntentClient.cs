@@ -98,7 +98,7 @@ namespace ObjectSpawning
                 yield break;
             }
 
-            var action = string.IsNullOrEmpty(response.action) ? "create" : response.action.ToLowerInvariant();
+            var action = InferAction(response);
 
             if (action == "create")
             {
@@ -145,6 +145,21 @@ namespace ObjectSpawning
             var invalidActionError = $"Backend returned invalid action: '{response.action}'";
             Debug.LogWarning($"[LlmIntentClient] {invalidActionError}");
             onComplete?.Invoke(null, null, null, elapsedMs, invalidActionError);
+        }
+
+        // The LLM occasionally omits `action` even when it isn't a create command -- observed
+        // for resize specifically (size_delta present, action missing). size_delta/prompt are
+        // each scoped by the schema to exactly one action, so their presence is unambiguous
+        // evidence of intent regardless of whether the model remembered to set action too.
+        static string InferAction(ParseIntentResponseBody response)
+        {
+            if (!string.IsNullOrEmpty(response.action))
+                return response.action.ToLowerInvariant();
+            if (!string.IsNullOrEmpty(response.size_delta))
+                return "resize";
+            if (!string.IsNullOrEmpty(response.prompt))
+                return "generate";
+            return "create";
         }
 
         static bool TryParseShape(string value, out PrimitiveShape shape)

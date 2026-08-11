@@ -220,11 +220,14 @@ def _tripo_headers():
     return {"Authorization": f"Bearer {TRIPO_API_KEY}", "Content-Type": "application/json"}
 
 
+TRIPO_MODEL = "v3.1-20260211"
+
+
 def _create_tripo_task(prompt: str) -> str:
     resp = requests.post(
         f"{TRIPO_BASE_URL}/generation/text-to-model",
         headers=_tripo_headers(),
-        json={"prompt": prompt, "texture": True},
+        json={"prompt": prompt, "texture": True, "model": TRIPO_MODEL},
         timeout=15,
     )
     if not resp.ok:
@@ -237,7 +240,7 @@ def _create_tripo_task(prompt: str) -> str:
 
 
 def _get_tripo_task(task_id: str) -> dict:
-    resp = requests.get(f"{TRIPO_BASE_URL}/task/{task_id}", headers=_tripo_headers(), timeout=15)
+    resp = requests.get(f"{TRIPO_BASE_URL}/tasks/{task_id}", headers=_tripo_headers(), timeout=15)
     resp.raise_for_status()
     return resp.json()["data"]
 
@@ -269,6 +272,7 @@ def generate_mesh(request: GenerateMeshRequest):
         "prompt": prompt,
         "final_glb_url": None,
         "error": None,
+        "progress": 0,
     }
     logger.info("Started mesh generation job %s for prompt=%r", task_id, prompt)
     return {"job_id": task_id}
@@ -295,6 +299,7 @@ def generation_status(job_id: str):
         return _job_response(job)
 
     status = task.get("status")
+    job["progress"] = task.get("progress", job["progress"])
     if status == "success":
         job["final_glb_url"] = (task.get("output") or {}).get("model_url")
         job["stage"] = "done"
@@ -310,6 +315,7 @@ def generation_status(job_id: str):
 def _job_response(job: dict) -> dict:
     return {
         "stage": job["stage"],
+        "progress": job["progress"],
         "final_glb_url": job["final_glb_url"],
         "error": job["error"],
     }

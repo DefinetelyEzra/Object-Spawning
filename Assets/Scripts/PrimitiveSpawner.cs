@@ -46,6 +46,7 @@ namespace ObjectSpawning
         // them, so they're tracked here rather than on any single command's result.
         public string LastGenerationError { get; private set; } = "";
         public int PendingGenerationCount { get; private set; }
+        public int LastGenerationProgress { get; private set; }
 
         // Stage 4's default edit target when the player isn't actively pointing at anything --
         // "the last object I created or touched", per the roadmap's own stated simplification.
@@ -156,7 +157,7 @@ namespace ObjectSpawning
                 glbUrl = url;
                 generationError = err;
                 requestDone = true;
-            });
+            }, progress => LastGenerationProgress = progress);
 
             yield return new WaitUntil(() => requestDone);
 
@@ -208,6 +209,23 @@ namespace ObjectSpawning
         // outstanding "last touched"/pointed-at references to it keep working unchanged.
         void SwapPlaceholderVisuals(GameObject placeholder, GameObject importedRoot)
         {
+            // Validate the imported mesh BEFORE touching the placeholder's own visuals -- an
+            // untrusted external GLB that comes back with no renderers (corrupt download,
+            // unexpected content) must never leave the object with neither the old cube nor a
+            // working replacement.
+            var renderers = importedRoot.GetComponentsInChildren<Renderer>();
+            if (renderers.Length == 0)
+            {
+                LastGenerationError = "Generated mesh has no visible geometry -- keeping placeholder.";
+                Debug.LogWarning($"[PrimitiveSpawner] {LastGenerationError}");
+                DestroyObject(importedRoot);
+                return;
+            }
+
+            var bounds = ComputeWorldBounds(importedRoot);
+
+            // Only now that the replacement is confirmed valid, remove the placeholder cube's
+            // own rendering/collision -- keeps the placeholder visible if anything above failed.
             if (placeholder.TryGetComponent<MeshFilter>(out var meshFilter))
                 DestroyObject(meshFilter);
             if (placeholder.TryGetComponent<MeshRenderer>(out var meshRenderer))
@@ -217,7 +235,6 @@ namespace ObjectSpawning
 
             // ObjectSelector's raycast needs *some* collider on the object -- size a fresh box
             // collider to the imported mesh's actual bounds now that it's in its final position.
-            var bounds = ComputeWorldBounds(importedRoot);
             var box = placeholder.AddComponent<BoxCollider>();
             box.center = placeholder.transform.InverseTransformPoint(bounds.center);
             box.size = new Vector3(

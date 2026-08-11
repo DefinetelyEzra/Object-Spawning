@@ -64,7 +64,7 @@ namespace ObjectSpawning
                 text += $"\nEdit target: {(target != null ? $"{target.name} ({source})" : "(none)")}";
 
                 if (primitiveSpawner.PendingGenerationCount > 0)
-                    text += $"\nGenerating: {primitiveSpawner.PendingGenerationCount}";
+                    text += $"\nGenerating: {primitiveSpawner.PendingGenerationCount} ({primitiveSpawner.LastGenerationProgress}%)";
                 if (!string.IsNullOrEmpty(primitiveSpawner.LastGenerationError))
                     text += $"\nGEN ERR: {Truncate(primitiveSpawner.LastGenerationError)}";
             }
