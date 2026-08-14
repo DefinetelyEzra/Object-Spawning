@@ -167,6 +167,16 @@ namespace ObjectSpawning
                 if (r.gameObject.TryGetComponent<LODGroup>(out var lodGroup))
                     UnityEngine.Object.Destroy(lodGroup);
 
+                // This project's URP asset has Light Layers enabled (m_SupportsLightLayers: 1),
+                // and the scene's directional light is restricted to renderingLayerMask=1. A
+                // MeshRenderer added at runtime via AddComponent (glTFast's own instantiation
+                // path, not the normal Editor object-creation flow) isn't guaranteed to inherit
+                // the expected default rendering layer -- if it doesn't match the light's mask,
+                // the light simply never illuminates this renderer at all: fully visible mesh,
+                // correctly assigned material and texture, zero lighting reaching it, i.e.
+                // exactly "black". Force it to every layer so it can never mismatch any light.
+                r.renderingLayerMask = uint.MaxValue;
+
                 // glTFast's own Shader Graph material reliably failed to render on-device despite
                 // the mesh/material/texture data all checking out as valid. Rebuild the visible
                 // material from Universal Render Pipeline/Lit instead -- the same shader every
@@ -177,9 +187,19 @@ namespace ObjectSpawning
                     if (urpLitShader != null)
                     {
                         var replacement = new Material(urpLitShader) { enableInstancing = true };
-                        var baseColorTex = mat.GetTexture("baseColorTexture");
+
+                        // glTFast's decoded textures come back as RGB24 -- a 3-channel,
+                        // byte-unaligned format known to sample inconsistently in shaders on some
+                        // mobile GPU drivers (confirmed here: Graphics.Blit could read real,
+                        // correct pixel data from it, but the actual rendered object was solid
+                        // black -- Blit performs a full GPU render pass that implicitly
+                        // reformats, direct SAMPLE_TEXTURE2D in a shader doesn't get that same
+                        // conversion). Converting through the same proven Blit path into a real
+                        // RGBA32 texture before handing it to the material sidesteps that.
+                        var baseColorTex = ConvertToRGBA32(mat.GetTexture("baseColorTexture") as Texture2D);
                         if (baseColorTex != null && replacement.HasProperty("_BaseMap"))
                             replacement.SetTexture("_BaseMap", baseColorTex);
+
                         r.sharedMaterial = replacement;
                     }
                 }
@@ -200,12 +220,26 @@ namespace ObjectSpawning
                             : UnityEngine.Rendering.IndexFormat.UInt16,
                     };
                     freshMesh.vertices = verts;
-                    freshMesh.normals = mesh.normals.Length == verts.Length ? mesh.normals : null;
                     freshMesh.uv = mesh.uv.Length == verts.Length ? mesh.uv : null;
                     freshMesh.triangles = mesh.triangles;
-                    if (freshMesh.normals == null)
-                        freshMesh.RecalculateNormals();
                     freshMesh.RecalculateBounds();
+
+                    // Recalculated from the mesh's actual triangle winding rather than trusting
+                    // glTFast's imported normal vectors -- but RecalculateNormals() only derives
+                    // normals CONSISTENT with whatever winding is already stored; it can't tell
+                    // "correct" from "reversed" on its own. Every generated mesh so far has
+                    // needed _Cull=Off (see above) precisely because winding, independent of
+                    // normal data, comes out reversed by the glTF (right-handed) -> Unity
+                    // (left-handed) conversion -- so a normals-only fix would likely just
+                    // recompute normals that are STILL inverted, still rendering fully dark.
+                    // FixInwardNormals below verifies which way the recalculated normals
+                    // actually ended up pointing (against each sampled vertex's direction from
+                    // the mesh's own center) and, only if they're predominantly inward, reverses
+                    // the winding and recomputes -- self-correcting rather than assuming the
+                    // reversal direction, so this can't make an already-correct mesh worse.
+                    freshMesh.RecalculateNormals();
+                    FixInwardNormals(freshMesh);
+                    freshMesh.RecalculateTangents();
 
                     if (r is SkinnedMeshRenderer skinned)
                         skinned.sharedMesh = freshMesh;
@@ -240,6 +274,73 @@ namespace ObjectSpawning
             root.transform.position += offset;
             Debug.Log($"[GeneratedMeshImporter] Recentered: parentPos={target}, offset={offset}, " +
                 $"final root.position={root.transform.position}, lossyScale={root.transform.lossyScale}");
+        }
+
+        // glTFast's decoded textures come back as RGB24, which samples inconsistently in
+        // shaders on some mobile GPU drivers. Blitting to a RenderTexture and reading back from
+        // that (rather than assigning the source texture directly) forces a real GPU-side format
+        // conversion to RGBA32 along the way -- the same mechanism used to confirm the source
+        // texture actually had valid color data in the first place. Works regardless of the
+        // source's isReadable flag, since Blit doesn't need CPU-side pixel access.
+        static Texture2D ConvertToRGBA32(Texture2D source)
+        {
+            if (source == null)
+                return null;
+
+            var rt = RenderTexture.GetTemporary(source.width, source.height, 0, RenderTextureFormat.ARGB32);
+            var previous = RenderTexture.active;
+            try
+            {
+                Graphics.Blit(source, rt);
+                RenderTexture.active = rt;
+                var converted = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false);
+                converted.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
+                converted.Apply();
+                return converted;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[GeneratedMeshImporter] RGBA32 conversion failed, falling back to source texture: {e.Message}");
+                return source;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(rt);
+            }
+        }
+
+        // Votes each sampled vertex's normal against its direction from the mesh's own center --
+        // a normal roughly agreeing with "away from center" is outward (correct), disagreeing is
+        // inward (reversed winding). Only flips when a clear majority disagree, so an oddly-
+        // shaped but genuinely correct mesh (concave regions, thin parts) can't get flipped by a
+        // few legitimately inward-facing vertices.
+        static void FixInwardNormals(Mesh mesh)
+        {
+            var verts = mesh.vertices;
+            var normals = mesh.normals;
+            if (verts.Length == 0 || normals.Length != verts.Length)
+                return;
+
+            var center = mesh.bounds.center;
+            var sampleStep = Mathf.Max(1, verts.Length / 200); // sample up to ~200 vertices
+            var sampled = 0;
+            var inwardVotes = 0;
+            for (var i = 0; i < verts.Length; i += sampleStep)
+            {
+                sampled++;
+                if (Vector3.Dot(verts[i] - center, normals[i]) < 0f)
+                    inwardVotes++;
+            }
+
+            if (sampled > 0 && inwardVotes > sampled / 2)
+            {
+                var tris = mesh.triangles;
+                for (var i = 0; i < tris.Length; i += 3)
+                    (tris[i + 1], tris[i + 2]) = (tris[i + 2], tris[i + 1]);
+                mesh.triangles = tris;
+                mesh.RecalculateNormals();
+            }
         }
 
         static Bounds ComputeBounds(Renderer[] renderers)

@@ -115,6 +115,12 @@ namespace ObjectSpawning.EditorTools
                 var selectorSerialized = new SerializedObject(objectSelector);
                 selectorSerialized.FindProperty("pointerOrigin").objectReferenceValue = selectorGO.transform;
                 selectorSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                // primitiveSpawner's own SerializedObject pass already ran earlier, before this
+                // GameObject existed to reference -- a second pass here just adds this one field.
+                var spawnerObjectSelectorSerialized = new SerializedObject(primitiveSpawner);
+                spawnerObjectSelectorSerialized.FindProperty("objectSelector").objectReferenceValue = objectSelector;
+                spawnerObjectSelectorSerialized.ApplyModifiedPropertiesWithoutUndo();
             }
             else
             {

@@ -77,6 +77,8 @@ namespace ObjectSpawning.EditorTools
             var floor = (GameObject)PrefabUtility.InstantiatePrefab(floorPrefab, scene);
             floor.transform.position = Vector3.zero;
 
+            BuildBoundaryColliders(floor);
+
             var simulatorPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(InteractionSimulatorPrefabPath);
             if (simulatorPrefab != null)
             {
@@ -125,6 +127,13 @@ namespace ObjectSpawning.EditorTools
                 var selectorSerialized = new SerializedObject(objectSelector);
                 selectorSerialized.FindProperty("pointerOrigin").objectReferenceValue = selectorGO.transform;
                 selectorSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                // primitiveSpawner's own SerializedObject pass already ran earlier in BuildScene,
+                // before this GameObject existed to reference -- a second pass here just adds
+                // this one field, same pattern AddVoiceCommandController uses below.
+                var spawnerObjectSelectorSerialized = new SerializedObject(primitiveSpawner);
+                spawnerObjectSelectorSerialized.FindProperty("objectSelector").objectReferenceValue = objectSelector;
+                spawnerObjectSelectorSerialized.ApplyModifiedPropertiesWithoutUndo();
             }
             else
             {
@@ -225,6 +234,42 @@ namespace ObjectSpawning.EditorTools
 
             Debug.Log($"[Stage0SceneBuilder] Voice command controller wired to WitConfiguration at {witConfigPath}.");
             return voiceCommandController;
+        }
+
+        const float BoundaryWallHeight = 3f;
+        const float BoundaryWallThickness = 0.2f;
+
+        // Invisible solid colliders flush with the Teleport Area's actual edge -- no renderer,
+        // just a BoxCollider, so they block both continuous-move walking and teleport rays from
+        // passing the boundary without being visible or interfering with the Teleport Area's own
+        // collider (they sit at the edge, not overlapping its surface).
+        static void BuildBoundaryColliders(GameObject floor)
+        {
+            var floorRenderer = floor.GetComponentInChildren<Renderer>();
+            if (floorRenderer == null)
+            {
+                Debug.LogWarning("[Stage0SceneBuilder] Floor has no Renderer -- cannot size boundary colliders, skipping.");
+                return;
+            }
+
+            var bounds = floorRenderer.bounds;
+            var wallY = bounds.min.y + BoundaryWallHeight / 2f;
+
+            BuildInvisibleWall("Boundary_North", new Vector3(bounds.center.x, wallY, bounds.max.z),
+                new Vector3(bounds.size.x + BoundaryWallThickness * 2f, BoundaryWallHeight, BoundaryWallThickness));
+            BuildInvisibleWall("Boundary_South", new Vector3(bounds.center.x, wallY, bounds.min.z),
+                new Vector3(bounds.size.x + BoundaryWallThickness * 2f, BoundaryWallHeight, BoundaryWallThickness));
+            BuildInvisibleWall("Boundary_East", new Vector3(bounds.max.x, wallY, bounds.center.z),
+                new Vector3(BoundaryWallThickness, BoundaryWallHeight, bounds.size.z + BoundaryWallThickness * 2f));
+            BuildInvisibleWall("Boundary_West", new Vector3(bounds.min.x, wallY, bounds.center.z),
+                new Vector3(BoundaryWallThickness, BoundaryWallHeight, bounds.size.z + BoundaryWallThickness * 2f));
+        }
+
+        static void BuildInvisibleWall(string name, Vector3 position, Vector3 size)
+        {
+            var wall = new GameObject(name, typeof(BoxCollider));
+            wall.transform.position = position;
+            wall.GetComponent<BoxCollider>().size = size;
         }
 
         const string BaseMaterialFolder = "Assets/Materials";

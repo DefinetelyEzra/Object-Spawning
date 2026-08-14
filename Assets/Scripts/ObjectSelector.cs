@@ -23,6 +23,12 @@ namespace ObjectSpawning
 
         public GameObject GetPointedAtObject() => selectedObject;
 
+        // Lets PrimitiveSpawner drop a stale sticky selection when it's no longer relevant (a
+        // new object was just spawned, or the pointed-at object was just deleted) -- without
+        // this, "make it bigger" would keep targeting whatever was pointed at minutes ago instead
+        // of what the player most recently created or lost.
+        public void ClearSelection() => selectedObject = null;
+
         void Awake()
         {
             selectAction = new InputAction(name: "SelectEditTarget", type: InputActionType.Button);

@@ -32,6 +32,12 @@ namespace ObjectSpawning
         // SpawnGenerating still spawns a placeholder (never crashes), it just never gets replaced.
         [SerializeField] MeshGenerationClient meshGenerationClient;
 
+        // Optional -- lets Spawn/Delete clear ObjectSelector's sticky pointed-at selection so a
+        // stale pointer from before ("this table" from a minute ago) doesn't keep out-competing
+        // the object the player just created or just lost. Without it wired, pointing still
+        // overrides LastTouchedGameObject as before.
+        [SerializeField] ObjectSelector objectSelector;
+
         static readonly Color GeneratingPlaceholderColor = new(0.6f, 0.6f, 0.6f);
 
         InputAction spawnAction;
@@ -108,6 +114,7 @@ namespace ObjectSpawning
             SpawnCount++;
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
+            objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Spawned {intent.Shape} #{SpawnCount} at {position}");
             StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
             return go;
@@ -132,6 +139,7 @@ namespace ObjectSpawning
             SpawnCount++;
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
+            objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Generating placeholder spawned for prompt=\"{prompt}\".");
             StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
 
@@ -536,11 +544,35 @@ namespace ObjectSpawning
             if (info != null)
                 registry.Remove(info.Id);
 
-            if (LastTouchedGameObject == target)
-                LastTouchedGameObject = null;
+            // Delete always acts on whatever is currently resolved as the edit target (there's
+            // no other way to reach this method), so the thing just deleted was, by definition,
+            // the edit target -- fall back to whatever's now the most recently spawned survivor
+            // rather than leaving the player with nothing selected. Also clears the pointer's own
+            // sticky selection: Unity's overridden equality already treats a destroyed reference
+            // as null, so GetPointedAtObject() would fall through on its own regardless, but
+            // clearing it explicitly doesn't rely on that being true everywhere it's read.
+            LastTouchedGameObject = FindMostRecentlySpawned();
+            objectSelector?.ClearSelection();
 
             Debug.Log($"[PrimitiveSpawner] Deleted {target.name}.");
             DestroyObject(target);
+        }
+
+        // Highest registry id still present (registry is keyed by nextId, which only ever
+        // increases) -- "the most recently spawned object that still exists."
+        GameObject FindMostRecentlySpawned()
+        {
+            GameObject best = null;
+            var bestId = -1;
+            foreach (var kv in registry)
+            {
+                if (kv.Value != null && kv.Key > bestId)
+                {
+                    best = kv.Value;
+                    bestId = kv.Key;
+                }
+            }
+            return best;
         }
 
         // Exhibition-facing bulk reset ("clear the room" / "reset the room"), so staff can wipe
