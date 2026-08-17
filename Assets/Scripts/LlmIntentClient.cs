@@ -30,10 +30,11 @@ namespace ObjectSpawning
         class ParseIntentResponseBody
         {
             public bool recognized;
-            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture
             public string shape;       // create only
             public string prompt;      // generate only
             public string color;       // create or recolor
+            public string material;    // retexture only
             public string size;        // create only (absolute)
             public string size_delta;  // resize only ("bigger" | "smaller")
             public string relation;        // create or move ("on" | "next_to" | "on_ground")
@@ -231,6 +232,18 @@ namespace ObjectSpawning
                     return true;
                 case "clear":
                     intent = new EditIntent(EditAction.ClearAll);
+                    return true;
+                case "retexture":
+                    // Unlike recolor's color (which gracefully defaults to white when
+                    // unrecognized), there's no sensible default material -- treat an unrecognized
+                    // or missing one as an invalid action entirely, same as generate's empty-prompt
+                    // check above, so the caller surfaces a real error instead of silently no-oping.
+                    if (!MaterialNaming.TryGetMaterial(response.material, out var material))
+                    {
+                        intent = default;
+                        return false;
+                    }
+                    intent = new EditIntent(EditAction.Retexture, material: material);
                     return true;
                 default:
                     intent = default;

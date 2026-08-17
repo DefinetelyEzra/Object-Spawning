@@ -205,6 +205,12 @@ namespace ObjectSpawning
                 return;
             }
 
+            if (VoiceIntentParser.TryParseRetexture(transcript, out var retextureIntent))
+            {
+                ApplyEdit(retextureIntent);
+                return;
+            }
+
             Debug.Log($"[VoiceCommandController] No shape or edit action recognized in: \"{transcript}\"");
         }
 
@@ -240,6 +246,10 @@ namespace ObjectSpawning
                 case EditAction.Rotate: spawner.Rotate(target, intent.RotateDegrees ?? 90f); break;
                 case EditAction.Duplicate: spawner.Duplicate(target); break;
                 case EditAction.Delete: spawner.Delete(target); break;
+                case EditAction.Retexture:
+                    if (intent.Material.HasValue)
+                        spawner.Retexture(target, intent.Material.Value);
+                    break;
             }
         }
     }

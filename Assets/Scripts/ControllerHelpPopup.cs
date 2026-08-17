@@ -83,6 +83,7 @@ namespace ObjectSpawning
                 "  \"move it 3 meters to the left\"\n" +
                 "  \"rotate it 180 degrees\"\n" +
                 "  \"move it onto the table\"\n" +
+                "  \"make it look like rusted metal\"\n" +
                 "  \"delete it\" / \"clear the room\"";
         }
     }

@@ -73,6 +73,27 @@ namespace ObjectSpawning.Tests
             Assert.IsFalse(ok);
         }
 
+        [TestCase("make it look like rusted metal", "rusted_metal")]
+        [TestCase("make it wood", "wood")]
+        [TestCase("give it a marble finish", "marble")]
+        public void TryParseRetexture_MaterialWordAlone_RecognizesRetexture(string transcript, string expectedMaterialName)
+        {
+            var ok = VoiceIntentParser.TryParseRetexture(transcript, out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(EditAction.Retexture, intent.Action);
+            Assert.IsTrue(intent.Material.HasValue);
+            Assert.AreEqual(expectedMaterialName, intent.Material.Value.Name);
+        }
+
+        [Test]
+        public void TryParseRetexture_NoMaterialWord_ReturnsFalse()
+        {
+            var ok = VoiceIntentParser.TryParseRetexture("delete that", out _);
+
+            Assert.IsFalse(ok);
+        }
+
         [TestCase("put a lamp on the table", PrimitiveShape.LampBase, SpatialRelation.On, PrimitiveShape.Table)]
         [TestCase("place a crate next to the shelf", PrimitiveShape.Crate, SpatialRelation.NextTo, PrimitiveShape.Shelf)]
         public void TryParse_RecognizesSpatialRelation(string transcript, PrimitiveShape expectedShape,

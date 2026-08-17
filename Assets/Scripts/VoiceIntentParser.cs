@@ -92,6 +92,7 @@ namespace ObjectSpawning
         Duplicate,
         Delete,
         ClearAll,
+        Retexture,
     }
 
     public readonly struct EditIntent
@@ -112,10 +113,16 @@ namespace ObjectSpawning
         // which callers should treat as the old fixed single-press default.
         public readonly float? RotateDegrees;
 
+        // Stage 7: only meaningful for Retexture -- always set when Action is Retexture, never
+        // otherwise. Unlike Recolor's color (which gracefully defaults to white when unrecognized),
+        // an unrecognized material has no sensible default, so callers that can't resolve one
+        // should fail to produce a Retexture intent at all rather than set this to null.
+        public readonly MaterialPreset? Material;
+
         public EditIntent(EditAction action, Color color = default, bool bigger = true,
             SpatialRelation? relation = null, PrimitiveShape? referenceShape = null,
             float? moveDistanceMeters = null, MoveDirection? moveDirection = null,
-            float? rotateDegrees = null)
+            float? rotateDegrees = null, MaterialPreset? material = null)
         {
             Action = action;
             Color = color;
@@ -125,6 +132,7 @@ namespace ObjectSpawning
             MoveDistanceMeters = moveDistanceMeters;
             MoveDirectionValue = moveDirection;
             RotateDegrees = rotateDegrees;
+            Material = material;
         }
     }
 
@@ -286,6 +294,8 @@ namespace ObjectSpawning
                 words.Add(keyword);
             foreach (var (name, _) in ColorNaming.All)
                 words.Add(name);
+            foreach (var material in MaterialNaming.All)
+                words.AddRange(material.Name.Replace('_', ' ').Split(' '));
             words.AddRange(new[]
             {
                 "bigger", "larger", "grow", "smaller", "shrink",
@@ -434,6 +444,40 @@ namespace ObjectSpawning
             }
 
             return false;
+        }
+
+        // Stage 7: same last-resort shape rationale as TryParseRecolor -- a material word with no
+        // shape word means "retexture the current object". Checked after TryParseRecolor since
+        // it's the same tier of fallback; the two vocabularies don't overlap, so ordering between
+        // them doesn't actually matter in practice.
+        //
+        // Longest matching preset name wins rather than first-array-order: "rusted metal" also
+        // contains "metal" as a whole word, so a plain first-match scan would always resolve the
+        // shorter, less specific preset instead of the one the user actually said.
+        public static bool TryParseRetexture(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+
+            MaterialPreset? best = null;
+            foreach (var material in MaterialNaming.All)
+            {
+                // Preset names use underscores ("rusted_metal") to double as the LLM schema's
+                // enum values -- spoken/transcribed text never contains one, so match the
+                // space-joined form instead.
+                var spoken = material.Name.Replace('_', ' ');
+                if (ContainsWord(text, spoken) && (best == null || spoken.Length > best.Value.Name.Replace('_', ' ').Length))
+                    best = material;
+            }
+
+            if (best == null)
+                return false;
+
+            intent = new EditIntent(EditAction.Retexture, material: best.Value);
+            return true;
         }
 
         static bool ContainsWord(string text, string word) => IndexOfWord(text, word) >= 0;

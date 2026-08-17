@@ -3,7 +3,7 @@ Object Spawning backend -- Stage 2/3/4/5/6.
 
 Exposes /parse-intent, which turns a raw voice transcript into the small structured
 JSON schema the Unity client already understands (create a shape, generate a novel mesh,
-or edit an existing object -- resize/recolor/move/rotate/duplicate/delete), using Gemini's
+or edit an existing object -- resize/recolor/retexture/move/rotate/duplicate/delete), using Gemini's
 function-calling to keep the LLM's output contained to a schema we control. Which object
 an edit action applies to is never part of this schema -- that's resolved client-side
 (pointing, else last object touched), not something the LLM is asked to figure out from
@@ -17,6 +17,11 @@ competitors' separate preview/refine split) behind a job id the Unity client pol
 state advances lazily, whenever a poll request happens to notice the task finished -- no
 background scheduler or thread needed, since the client is already polling on its own
 cadence.
+
+Stage 7 adds the retexture action -- "make it look like rusted metal" -- mapping loose
+phrasing onto a small curated PBR material library the Unity client owns (color/metallic/
+smoothness presets, no texture assets involved). Same pattern as recolor: the LLM only
+names which preset, Unity applies it.
 """
 import logging
 import os
@@ -70,13 +75,16 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             ),
             "action": types.Schema(
                 type="STRING",
-                enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate", "delete", "clear"],
+                enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
+                      "delete", "clear", "retexture"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
                              "shape library -- set prompt instead of shape. 'clear' wipes every "
                              "spawned object and resets the room ('clear the room', 'clear "
-                             "everything', 'reset', 'start over') -- takes no other fields. The "
+                             "everything', 'reset', 'start over') -- takes no other fields. "
+                             "'retexture' changes an existing object's surface material (NOT its "
+                             "solid color -- see the 'material' field) -- set material. The "
                              "remaining actions edit whatever object the user is currently "
                              "pointing at, or the last one they created or touched if they "
                              "aren't pointing at anything -- do NOT try to figure out which "
@@ -110,8 +118,35 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                       "orange", "purple", "pink", "gray", "brown", "cyan"],
                 description="For action=create or action=recolor. The closest matching color "
                              "name from this list, even if the user's wording differs (e.g. "
-                             "'grey'->gray, 'violet'->purple, 'crimson'->red, 'sky blue'->blue, "
-                             "'wood'/'wooden'->brown). Omit entirely if no color was mentioned.",
+                             "'grey'->gray, 'violet'->purple, 'crimson'->red, 'sky blue'->blue). "
+                             "Omit entirely if no color was mentioned. IMPORTANT for action=recolor "
+                             "specifically: this field is ONLY for a plain, material-free color word "
+                             "('turn it red', 'make it blue', 'change its color to green'). If the "
+                             "word instead names (or closely synonyms) one of the material "
+                             "field's own curated entries -- including ones that also happen to read "
+                             "as a color, like 'gold', 'silver', 'chrome', 'wood', 'wooden' -- that "
+                             "is ALWAYS action=retexture with material set, never action=recolor, "
+                             "even though the word alone could loosely describe a color too. "
+                             "'make it gold' and 'make it wooden' are retexture (material=gold, "
+                             "material=wood), not recolor.",
+            ),
+            "material": types.Schema(
+                type="STRING",
+                enum=["wood", "metal", "rusted_metal", "gold", "chrome", "stone", "concrete",
+                      "marble", "brick", "plastic", "rubber", "fabric", "leather"],
+                description="Only for action=retexture. The closest matching surface material "
+                             "from this curated list, even if the user's wording differs -- "
+                             "'wooden'/'oak'/'timber'->wood, 'steel'/'metallic'/'iron'->metal, "
+                             "'rusty'/'rusted'/'corroded'->rusted_metal, 'golden'->gold, "
+                             "'silver'/'mirror'/'polished silver'/'chrome-plated'->chrome, "
+                             "'rock'/'granite'->stone, 'cement'->concrete, 'cloth'/'canvas'/"
+                             "'textile'->fabric. This takes priority over the color field whenever "
+                             "a word could be read as either -- 'gold'/'silver'/'wood'/'wooden' name "
+                             "a material first, a color only as an afterthought. If the request "
+                             "doesn't reasonably match any of these (a genuinely different material, "
+                             "or a vague 'shinier'/'rougher' texture tweak with no named material), "
+                             "set recognized to false instead of forcing a mismatch -- there is no "
+                             "generic texture-generation fallback yet.",
             ),
             "size": types.Schema(
                 type="STRING",
@@ -227,8 +262,18 @@ SYSTEM_PROMPT = (
     "per that field's own sign convention; otherwise leave degrees unset.\n"
     "For 'clear the room', 'clear everything', 'reset', 'start over' (wiping every spawned "
     "object), set action=clear and no other fields.\n"
-    "If the transcript doesn't describe either a create, generate, edit, or clear command, set "
-    "recognized to false and omit the other fields."
+    "For changing an existing object's surface material ('make it look like rusted metal', "
+    "'turn it to stone', 'make it wood', 'give it a marble finish'), set action=retexture and "
+    "material to the closest match from the material field's own curated list. This is distinct "
+    "from recolor: a plain, material-free color word alone ('make it red', 'make it blue') is "
+    "recolor, while a named material is retexture -- even one-word phrases. Material wins "
+    "whenever a word is ambiguous between the two: 'make it gold', 'make it silver', 'make it "
+    "wood'/'wooden' are retexture (material=gold/chrome/wood), NOT recolor, even though gold/"
+    "silver/wood could each loosely describe a color too -- naming a material takes priority "
+    "over any color reading of the same word. If the material doesn't reasonably match the "
+    "curated list, set recognized to false rather than guessing the nearest one.\n"
+    "If the transcript doesn't describe either a create, generate, edit, clear, or retexture "
+    "command, set recognized to false and omit the other fields."
 )
 
 

@@ -443,6 +443,32 @@ namespace ObjectSpawning
             Debug.Log($"[PrimitiveSpawner] Recolored {target.name}.");
         }
 
+        // Stage 7: applies a curated PBR preset (base color + metallic + smoothness, no texture
+        // image) to every renderer on the target -- works the same way whether the target is a
+        // plain primitive, a ProceduralGeometryFactory composite, or a Stage 6 generated mesh.
+        // For a generated mesh this deliberately replaces its downloaded texture with the flat
+        // preset color, mirroring the roadmap's "assign from a curated library" alternative to
+        // full generative retexturing.
+        public void Retexture(GameObject target, MaterialPreset preset)
+        {
+            if (target == null)
+                return;
+
+            foreach (var renderer in target.GetComponentsInChildren<Renderer>())
+            {
+                var instance = baseMaterial != null ? Instantiate(baseMaterial) : new Material(renderer.sharedMaterial);
+                instance.color = preset.BaseColor;
+                if (instance.HasProperty("_Metallic"))
+                    instance.SetFloat("_Metallic", preset.Metallic);
+                if (instance.HasProperty("_Smoothness"))
+                    instance.SetFloat("_Smoothness", preset.Smoothness);
+                renderer.material = instance;
+            }
+
+            LastTouchedGameObject = target;
+            Debug.Log($"[PrimitiveSpawner] Retextured {target.name} as {preset.Name}.");
+        }
+
         // Stage "advanced instructions": distanceMeters+direction ("move it 3 meters to the
         // left") is an alternative to relation-based placement, not a combination -- when both
         // are given, the distance/direction move wins. With neither, relation/referenceShape
