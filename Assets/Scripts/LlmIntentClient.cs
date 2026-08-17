@@ -181,12 +181,12 @@ namespace ObjectSpawning
                 case "cylinder": shape = PrimitiveShape.Cylinder; return true;
                 case "table": shape = PrimitiveShape.Table; return true;
                 case "shelf": shape = PrimitiveShape.Shelf; return true;
-                case "lamp": shape = PrimitiveShape.LampBase; return true;
                 case "crate": shape = PrimitiveShape.Crate; return true;
                 case "chair": shape = PrimitiveShape.Chair; return true;
                 case "stool": shape = PrimitiveShape.Stool; return true;
                 case "bench": shape = PrimitiveShape.Bench; return true;
                 case "sofa": shape = PrimitiveShape.Sofa; return true;
+                case "light": shape = PrimitiveShape.PointLight; return true;
                 default: shape = default; return false;
             }
         }
@@ -251,6 +251,29 @@ namespace ObjectSpawning
                         return false;
                     }
                     intent = new EditIntent(EditAction.Retexture, material: material);
+                    return true;
+                case "adjust_lighting":
+                    // Reuses resize's own size_delta/resize_multiplier fields (brighter/dimmer is
+                    // the same "how much" shape as bigger/smaller) and recolor's color field --
+                    // no dedicated schema fields needed. Unlike resize's Bigger (always meaningful,
+                    // since a resize command always implies some direction), brightness here must
+                    // stay optional: a pure color command ("make the lighting warm") must not also
+                    // silently reset brightness, so absence of size_delta means "no change", not
+                    // "default to brighter".
+                    bool? lightBrighter = string.IsNullOrEmpty(response.size_delta)
+                        ? null
+                        : response.size_delta.ToLowerInvariant() != "smaller";
+                    var lightMultiplier = response.resize_multiplier != 0f ? (float?)response.resize_multiplier : null;
+                    Color? lightColor = ColorNaming.TryGetColor(response.color, out var lc) ? lc : null;
+
+                    if (!lightBrighter.HasValue && !lightColor.HasValue)
+                    {
+                        intent = default;
+                        return false;
+                    }
+
+                    intent = new EditIntent(EditAction.AdjustLighting,
+                        color: lightColor, lightBrighter: lightBrighter, resizeMultiplier: lightMultiplier);
                     return true;
                 default:
                     intent = default;

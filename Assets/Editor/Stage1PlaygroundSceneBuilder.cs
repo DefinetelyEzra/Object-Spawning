@@ -35,7 +35,7 @@ namespace ObjectSpawning.EditorTools
         {
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-            BuildLighting();
+            var directionalLight = BuildLighting();
 
             var rigPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(XROriginPrefabPath);
             if (rigPrefab == null)
@@ -90,6 +90,7 @@ namespace ObjectSpawning.EditorTools
             var spawnerSerialized = new SerializedObject(primitiveSpawner);
             spawnerSerialized.FindProperty("baseMaterial").objectReferenceValue = GetOrCreateBaseMaterial();
             spawnerSerialized.FindProperty("floorReference").objectReferenceValue = floor.transform;
+            spawnerSerialized.FindProperty("directionalLight").objectReferenceValue = directionalLight;
 
             if (headTransform != null)
             {
@@ -295,7 +296,7 @@ namespace ObjectSpawning.EditorTools
             RenderSettings.ambientMode = AmbientMode.Skybox;
         }
 
-        static void BuildLighting()
+        static Light BuildLighting()
         {
             var light = new GameObject("Directional Light", typeof(Light));
             light.transform.rotation = Quaternion.Euler(55f, -25f, 0f);
@@ -304,6 +305,7 @@ namespace ObjectSpawning.EditorTools
             lightComp.intensity = 0.9f;
             lightComp.color = new Color(1f, 0.97f, 0.92f); // soft warm, gallery-style
             lightComp.shadows = LightShadows.Soft;
+            return lightComp;
         }
 
         static Material CreateMaterial(string name, Color color)

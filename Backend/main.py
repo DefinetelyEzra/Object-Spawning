@@ -1,9 +1,10 @@
 """
-Object Spawning backend -- Stage 2/3/4/5/6.
+Object Spawning backend -- Stage 2/3/4/5/6/7/8.
 
 Exposes /parse-intent, which turns a raw voice transcript into the small structured
 JSON schema the Unity client already understands (create a shape, generate a novel mesh,
-or edit an existing object -- resize/recolor/retexture/move/rotate/duplicate/delete), using Gemini's
+or edit an existing object -- resize/recolor/retexture/move/rotate/duplicate/delete/
+adjust_lighting), using Gemini's
 function-calling to keep the LLM's output contained to a schema we control. Which object
 an edit action applies to is never part of this schema -- that's resolved client-side
 (pointing, else last object touched), not something the LLM is asked to figure out from
@@ -22,6 +23,14 @@ Stage 7 adds the retexture action -- "make it look like rusted metal" -- mapping
 phrasing onto a small curated PBR material library the Unity client owns (color/metallic/
 smoothness presets, no texture assets involved). Same pattern as recolor: the LLM only
 names which preset, Unity applies it.
+
+Stage 8 adds a "light" create shape (a real point light) and the adjust_lighting action for
+the scene's own ambient/directional light -- reuses resize's size_delta/resize_multiplier
+fields for brightness and recolor's color field for tint rather than inventing new ones,
+since "how much brighter/dimmer" and "what tint" are the same shape of question resize/
+recolor already answer. There used to also be a purely decorative "lamp" shape distinct from
+"light", but headset testing showed the LLM reliably conflated the two regardless of prompt
+wording, so lamp was removed rather than chasing an unreliable disambiguation.
 """
 import logging
 import os
@@ -76,7 +85,7 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             "action": types.Schema(
                 type="STRING",
                 enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
-                      "delete", "clear", "retexture"],
+                      "delete", "clear", "retexture", "adjust_lighting"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
@@ -84,25 +93,35 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "spawned object and resets the room ('clear the room', 'clear "
                              "everything', 'reset', 'start over') -- takes no other fields. "
                              "'retexture' changes an existing object's surface material (NOT its "
-                             "solid color -- see the 'material' field) -- set material. The "
-                             "remaining actions edit whatever object the user is currently "
-                             "pointing at, or the last one they created or touched if they "
-                             "aren't pointing at anything -- do NOT try to figure out which "
-                             "object from the transcript's wording, that's resolved elsewhere. "
-                             "Default to 'create' if omitted.",
+                             "solid color -- see the 'material' field) -- set material. "
+                             "'adjust_lighting' changes the SCENE's own ambient/directional light "
+                             "(not a specific object) -- only for phrases that clearly refer to "
+                             "the room/lighting/ambiance/environment as a whole ('make the room "
+                             "brighter', 'dim the lighting', 'make the lighting feel warm'), using "
+                             "size_delta/resize_multiplier for brightness and color for tint, "
+                             "exactly like resize/recolor's own fields. A bare 'make it brighter' "
+                             "with no scene reference is NOT this -- that's action=resize against "
+                             "whatever object is currently targeted. The remaining actions (resize/"
+                             "recolor/move/rotate/duplicate/delete/retexture) edit whatever object "
+                             "the user is currently pointing at, or the last one they created or "
+                             "touched if they aren't pointing at anything -- do NOT try to figure "
+                             "out which object from the transcript's wording, that's resolved "
+                             "elsewhere. Default to 'create' if omitted.",
             ),
             "shape": types.Schema(
                 type="STRING",
-                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair",
-                      "stool", "bench", "sofa"],
+                enum=["cube", "sphere", "cylinder", "table", "shelf", "crate", "chair",
+                      "stool", "bench", "sofa", "light"],
                 description="Only for action=create. The object requested. Map related words: "
                              "box/block->cube, ball/orb/globe->sphere, tube/pipe/can->cylinder, "
-                             "desk->table, bookshelf/bookcase->shelf, lamp/lantern->lamp, "
-                             "container->crate, seat->chair, couch->sofa. Note 'box' means the "
-                             "cube primitive, not crate -- only the word 'crate' itself maps to "
-                             "crate. If the requested object doesn't reasonably map to any of "
-                             "these, use action=generate with 'prompt' instead -- don't force a "
-                             "mismatch.",
+                             "desk->table, bookshelf/bookcase->shelf, container->crate, seat->chair, "
+                             "couch->sofa, lamp/lantern/bulb/lightbulb/light source/point light-> "
+                             "light (there is no separate decorative-lamp shape -- any lamp/light/ "
+                             "bulb request maps to this one 'light' entry, which is a real light "
+                             "source, not just a decorative object). Also note 'box' means the cube "
+                             "primitive, not crate -- only the word 'crate' itself maps to crate. If "
+                             "the requested object doesn't reasonably map to any of these, use "
+                             "action=generate with 'prompt' instead -- don't force a mismatch.",
             ),
             "prompt": types.Schema(
                 type="STRING",
@@ -116,9 +135,13 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                 type="STRING",
                 enum=["red", "green", "blue", "yellow", "white", "black",
                       "orange", "purple", "pink", "gray", "brown", "cyan"],
-                description="For action=create or action=recolor. The closest matching color "
-                             "name from this list, even if the user's wording differs (e.g. "
-                             "'grey'->gray, 'violet'->purple, 'crimson'->red, 'sky blue'->blue). "
+                description="For action=create, action=recolor, or action=adjust_lighting (the "
+                             "scene's own ambient/directional light tint, e.g. 'make the lighting "
+                             "feel warm/blue'). The closest matching color name from this list, "
+                             "even if the user's wording differs (e.g. 'grey'->gray, 'violet'-> "
+                             "purple, 'crimson'->red, 'sky blue'->blue, 'warm'->orange, 'cool'-> "
+                             "blue -- the last two only for adjust_lighting, not recolor, since "
+                             "'warm'/'cool' describe lighting mood, not an object's own color). "
                              "Omit entirely if no color was mentioned. IMPORTANT for action=recolor "
                              "specifically: this field is ONLY for a plain, material-free color word "
                              "('turn it red', 'make it blue', 'change its color to green'). If the "
@@ -157,22 +180,30 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             "size_delta": types.Schema(
                 type="STRING",
                 enum=["bigger", "smaller"],
-                description="Only for action=resize. Whether to grow or shrink the target. "
-                             "Defaults to bigger if omitted.",
+                description="For action=resize (whether to grow or shrink the target) OR "
+                             "action=adjust_lighting (whether to brighten or dim the scene's "
+                             "lighting -- map 'brighter'/'brighten'/'lighter' to bigger, 'dimmer'/"
+                             "'dim'/'darker' to smaller). Defaults to bigger if omitted. For "
+                             "adjust_lighting specifically, leave this unset entirely when the "
+                             "phrase is a pure color/mood change with no brightness word ('make "
+                             "the lighting feel warm') -- don't invent a brightness change that "
+                             "wasn't asked for.",
             ),
             "resize_multiplier": types.Schema(
                 type="NUMBER",
-                description="Only for action=resize, and only when the user gives a SPECIFIC "
+                description="Paired with size_delta for EITHER action=resize or "
+                             "action=adjust_lighting, and only when the user gives a SPECIFIC "
                              "factor ('make it 10 times bigger', 'make it 3x the size', 'shrink "
                              "it by half' -> 2, 'make it a quarter of the size' -> 4, 'double it' "
-                             "-> 2, 'triple it' -> 3). Always a positive number expressing the "
-                             "factor itself, never pre-negated or inverted -- the client applies "
-                             "it as a straight multiply for bigger and a divide for smaller, so "
-                             "'make it 2x smaller' means half size (set resize_multiplier=2, "
-                             "size_delta=smaller), not literally multiplied by 2. Leave unset for "
-                             "a plain 'make it bigger'/'make it smaller' with no specific amount "
-                             "-- the client applies its own default single-step size change in "
-                             "that case, don't guess a number yourself.",
+                             "-> 2, 'triple it' -> 3, 'make the room twice as bright' -> 2). Always "
+                             "a positive number expressing the factor itself, never pre-negated or "
+                             "inverted -- the client applies it as a straight multiply for bigger "
+                             "and a divide for smaller, so 'make it 2x smaller' means half size "
+                             "(set resize_multiplier=2, size_delta=smaller), not literally "
+                             "multiplied by 2. Leave unset for a plain 'bigger'/'smaller'/"
+                             "'brighter'/'dimmer' with no specific amount -- the client applies its "
+                             "own default single-step change in that case, don't guess a number "
+                             "yourself.",
             ),
             "relation": types.Schema(
                 type="STRING",
@@ -182,7 +213,7 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "specific distance -- for a specific distance+direction on a move "
                              "command ('move it 3 meters to the left'), use distance_meters and "
                              "direction instead, and leave this unset. 'on' and 'next_to' are "
-                             "relative to an EXISTING OBJECT (e.g. 'put a lamp ON the table' -> "
+                             "relative to an EXISTING OBJECT (e.g. 'put a light ON the table' -> "
                              "on, 'move it NEXT TO the shelf' -> next_to) -- also set "
                              "reference_shape for these two. 'on_ground' is for the floor/ground "
                              "itself ('put it on the ground', 'move it to the floor') -- the "
@@ -193,10 +224,10 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             ),
             "reference_shape": types.Schema(
                 type="STRING",
-                enum=["cube", "sphere", "cylinder", "table", "shelf", "lamp", "crate", "chair",
-                      "stool", "bench", "sofa"],
+                enum=["cube", "sphere", "cylinder", "table", "shelf", "crate", "chair",
+                      "stool", "bench", "sofa", "light"],
                 description="Only for relation=on or relation=next_to. The type of the existing "
-                             "object being referenced (e.g. 'table' in 'put a lamp on the table', "
+                             "object being referenced (e.g. 'table' in 'put a light on the table', "
                              "'move it onto the table'). If several objects of that type exist, the "
                              "client resolves which specific one -- do not try to disambiguate "
                              "instances yourself. Leave unset for relation=on_ground (the ground "
@@ -250,11 +281,11 @@ SYSTEM_PROMPT = (
     "Always call the handle_command function exactly once, with no other text.\n"
     "For create commands (spawn a table, make a red cube, give me a big crate), set action=create "
     "and shape (plus color/size if mentioned). The shape library is ONLY: cube, sphere, cylinder, "
-    "table, shelf, lamp, crate, chair, stool, bench, sofa (plus their listed synonyms). If the "
+    "table, shelf, crate, chair, stool, bench, sofa, light (plus their listed synonyms). If the "
     "requested object doesn't reasonably match any of those (a gargoyle, a dragon, a sword, a car, "
     "a plant -- anything genuinely different), set action=generate and prompt instead of shape -- "
     "do not force it into the nearest shape. If the user describes where to place it relative to an "
-    "existing object ('put a lamp on the table', 'place a crate next to the shelf'), also set "
+    "existing object ('put a light on the table', 'place a crate next to the shelf'), also set "
     "relation and reference_shape (this applies to create only, not generate -- generated objects "
     "always spawn at the default position). If they mention the ground/floor instead ('put it on "
     "the ground', 'place a crate on the floor'), set relation=on_ground and leave reference_shape "
@@ -262,7 +293,11 @@ SYSTEM_PROMPT = (
     "For edit commands about an existing object ('make it bigger', 'turn it red', 'rotate it', "
     "'duplicate that', 'delete it', 'move it here'), set action to resize/recolor/rotate/duplicate/"
     "delete/move as appropriate. Leave shape unset for edit actions -- which object it applies to "
-    "is resolved elsewhere, not from the transcript's wording. For resize: if the user gives a "
+    "is resolved elsewhere, not from the transcript's wording. Resize also covers plain 'brighter'/"
+    "'dimmer'/'dim' with no scene reference ('make it brighter', 'dim it') -- these are resize too "
+    "(size_delta=bigger/smaller respectively), NOT adjust_lighting, since there's no room/lighting/"
+    "scene word; the client resolves whatever object that ends up targeting client-side, including "
+    "the case where it's a light. For resize: if the user gives a "
     "specific factor ('make it 10 times bigger', 'shrink it by half', 'double it'), also set "
     "resize_multiplier per that field's own sign/rounding convention (always positive, always the "
     "factor itself); otherwise leave it unset for the client's own default single-step change. "
@@ -290,8 +325,20 @@ SYSTEM_PROMPT = (
     "silver/wood could each loosely describe a color too -- naming a material takes priority "
     "over any color reading of the same word. If the material doesn't reasonably match the "
     "curated list, set recognized to false rather than guessing the nearest one.\n"
-    "If the transcript doesn't describe either a create, generate, edit, clear, or retexture "
-    "command, set recognized to false and omit the other fields."
+    "For changing the SCENE's own ambient/directional light -- not a specific object -- ('make "
+    "the room brighter', 'dim the lighting', 'brighten the scene', 'make the lighting feel warm', "
+    "'change the ambiance to blue'), set action=adjust_lighting using size_delta/resize_multiplier "
+    "for brightness (exactly like resize's own fields, including the same multiplier convention) "
+    "and color for tint (exactly like recolor's own field, including 'warm'->orange, 'cool'->blue "
+    "for mood words that only make sense as lighting, not an object's color). Only use "
+    "adjust_lighting when the phrase clearly references the room/lighting/ambiance/environment/"
+    "scene as a whole -- a bare 'make it brighter' or 'dim it' with no such reference is action="
+    "resize instead, targeting whatever object is currently selected (this covers the case where "
+    "that object happens to be a spawned light itself, which is resolved client-side, not by you). "
+    "Set only the fields the phrase actually asks for -- 'make the lighting feel warm' should set "
+    "color alone and leave size_delta unset, not invent a brightness change that wasn't requested.\n"
+    "If the transcript doesn't describe either a create, generate, edit, clear, retexture, or "
+    "adjust_lighting command, set recognized to false and omit the other fields."
 )
 
 

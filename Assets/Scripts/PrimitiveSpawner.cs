@@ -38,6 +38,14 @@ namespace ObjectSpawning
         // overrides LastTouchedGameObject as before.
         [SerializeField] ObjectSelector objectSelector;
 
+        // Stage 8: the scene's own directional/ambient light, adjusted by AdjustLighting --
+        // optional, same "degrade gracefully if unwired" convention as meshGenerationClient.
+        [SerializeField] Light directionalLight;
+
+        const int MaxPointLights = 4;
+        const float MinAmbientIntensity = 0.05f;
+        const float MaxAmbientIntensity = 3f;
+
         static readonly Color GeneratingPlaceholderColor = new(0.6f, 0.6f, 0.6f);
 
         InputAction spawnAction;
@@ -74,14 +82,29 @@ namespace ObjectSpawning
             Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, 0.2f));
 
         static bool IsComposite(PrimitiveShape shape) => shape is PrimitiveShape.Table
-            or PrimitiveShape.Shelf or PrimitiveShape.LampBase or PrimitiveShape.Crate or PrimitiveShape.Chair
+            or PrimitiveShape.Shelf or PrimitiveShape.Crate or PrimitiveShape.Chair
             or PrimitiveShape.Stool or PrimitiveShape.Bench or PrimitiveShape.Sofa;
 
         public GameObject Spawn(SpawnIntent intent)
         {
+            // Checked before any GameObject is created -- a clean, side-effect-free refusal
+            // rather than building then discarding a light. Roadmap's own "keep it simple"
+            // guidance for Stage 8 calls out exactly this cap ("a capped number of point lights
+            // (e.g. 4) is plenty") given VR's unforgiving real-time dynamic light budget.
+            if (intent.Shape == PrimitiveShape.PointLight && CountOfShape(PrimitiveShape.PointLight) >= MaxPointLights)
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] Point light cap ({MaxPointLights}) reached -- " +
+                    "delete one before adding another.");
+                return null;
+            }
+
             GameObject go;
 
-            if (IsComposite(intent.Shape))
+            if (intent.Shape == PrimitiveShape.PointLight)
+            {
+                go = BuildPointLight(intent.Scale);
+            }
+            else if (IsComposite(intent.Shape))
             {
                 go = ProceduralGeometryFactory.Build(intent.Shape);
                 // Composite generators build at a fixed, real-world-proportioned canonical size
@@ -293,11 +316,45 @@ namespace ObjectSpawning
             registry[info.Id] = go;
         }
 
+        // Stage 8: a small visible bulb (so it can actually be seen and pointed at -- an
+        // invisible light source would be unselectable, since ObjectSelector's raycast needs a
+        // collider, which CreatePrimitive(Sphere) already provides for free) plus a real Light
+        // component. scale follows the same small/medium/large convention as every other create,
+        // but drives range/intensity (the light's actual physical effect) rather than just the
+        // bulb's visual size, since transform scale alone has no effect on a Light component.
+        static GameObject BuildPointLight(float scale)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.transform.localScale = Vector3.one * Mathf.Max(0.05f, scale * 0.3f);
+
+            var light = go.AddComponent<Light>();
+            light.type = LightType.Point;
+            var sizeRatio = scale / VoiceIntentParser.DefaultScale;
+            light.range = 3f * sizeRatio;
+            light.intensity = 2f * sizeRatio;
+
+            return go;
+        }
+
+        int CountOfShape(PrimitiveShape shape)
+        {
+            var count = 0;
+            foreach (var kv in registry)
+            {
+                if (kv.Value == null)
+                    continue;
+                var info = kv.Value.GetComponent<SpawnedObjectInfo>();
+                if (info != null && info.Shape == shape)
+                    count++;
+            }
+            return count;
+        }
+
         // Stage 5: resolves "on"/"next to"/"on ground" relations into a concrete world position
         // using bounding boxes, falling back to the normal default (in front of the user) when no
         // relation was specified or no matching reference object exists yet -- never guesses,
         // never throws. Shared by both Spawn (placing a brand-new object) and Move (repositioning
-        // an existing one) -- "put a lamp on the table" and "move it onto the table" resolve the
+        // an existing one) -- "put a light on the table" and "move it onto the table" resolve the
         // same way once you have an object and a relation, whichever it came from.
         Vector3 ResolvePlacement(GameObject obj, SpatialRelation? relation, PrimitiveShape? referenceShape,
             GameObject excludeFromReference)
@@ -427,6 +484,10 @@ namespace ObjectSpawning
         // smaller" -> multiplier=2), applied as a straight multiply when bigger and a divide when
         // not -- matching how people actually say "N times smaller" (half size, not 1/N smaller).
         // Null keeps the old fixed single-press 1.25x/0.8x step.
+        //
+        // Stage 8: when the target carries a Light component (a spawned PointLight), "bigger"/
+        // "smaller" reinterprets as brighter/dimmer -- intensity and range -- instead of transform
+        // scale, since scaling a light's GameObject has no effect on the light it casts.
         public void Resize(GameObject target, bool bigger, float? multiplier = null)
         {
             if (target == null)
@@ -436,7 +497,16 @@ namespace ObjectSpawning
                 ? (bigger ? multiplier.Value : 1f / multiplier.Value)
                 : (bigger ? 1.25f : 0.8f);
 
-            target.transform.localScale *= factor;
+            if (target.TryGetComponent<Light>(out var light))
+            {
+                light.intensity = Mathf.Clamp(light.intensity * factor, 0.05f, 12f);
+                light.range = Mathf.Clamp(light.range * factor, 0.3f, 15f);
+            }
+            else
+            {
+                target.transform.localScale *= factor;
+            }
+
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Resized {target.name} ({(bigger ? "bigger" : "smaller")}" +
                 $"{(multiplier.HasValue ? $", {multiplier.Value:0.##}x" : "")}).");
@@ -693,19 +763,70 @@ namespace ObjectSpawning
 
         void ApplyColor(GameObject go, Color color)
         {
+            // A PointLight's own bulb sphere sits essentially at its Light's origin, so the
+            // intense nearby illumination blows the bulb's own surface out to white under normal
+            // lit shading regardless of base color -- confirmed in headset testing ("the light
+            // object releases a glow but the object itself doesn't [tint], it has a white
+            // texture"). Emission bypasses that: it's an additive glow term, not a lit response,
+            // so the bulb reads as the requested color instead of just contributing a correctly-
+            // tinted glow to everything else nearby while staying white itself.
+            var isLight = go.TryGetComponent<Light>(out var light);
+
             foreach (var renderer in go.GetComponentsInChildren<Renderer>())
             {
+                Material instance;
                 if (baseMaterial != null)
                 {
-                    var instance = Instantiate(baseMaterial);
+                    instance = Instantiate(baseMaterial);
                     instance.color = color;
                     renderer.material = instance;
                 }
                 else
                 {
-                    renderer.material.color = color;
+                    instance = renderer.material;
+                    instance.color = color;
+                }
+
+                if (isLight && instance.HasProperty("_EmissionColor"))
+                {
+                    instance.EnableKeyword("_EMISSION");
+                    instance.SetColor("_EmissionColor", color);
                 }
             }
+
+            // Tinting the light's own color too means create/recolor change what the light
+            // actually casts, not just how the bulb itself looks.
+            if (isLight)
+                light.color = color;
+        }
+
+        // Stage 8: the scene's directional/ambient light -- unlike Resize/Recolor there's no
+        // registry target to resolve here (mirrors ClearAll's own "no target" dispatch in
+        // VoiceCommandController.ApplyEdit). brighter/multiplier/color are each independently
+        // optional so a pure color command ("make the lighting warm") never silently resets
+        // brightness, and vice versa.
+        public void AdjustLighting(bool? brighter, float? multiplier, Color? color)
+        {
+            if (directionalLight == null)
+            {
+                Debug.LogWarning("[PrimitiveSpawner] No directional light wired -- cannot adjust scene lighting.");
+                return;
+            }
+
+            if (brighter.HasValue)
+            {
+                var factor = multiplier.HasValue
+                    ? (brighter.Value ? multiplier.Value : 1f / multiplier.Value)
+                    : (brighter.Value ? 1.25f : 0.8f);
+                directionalLight.intensity = Mathf.Clamp(directionalLight.intensity * factor, MinAmbientIntensity, MaxAmbientIntensity);
+            }
+
+            if (color.HasValue)
+                directionalLight.color = color.Value;
+
+            Debug.Log($"[PrimitiveSpawner] Adjusted scene lighting " +
+                $"(brighter={(brighter.HasValue ? brighter.Value.ToString() : "unchanged")}, " +
+                $"color={(color.HasValue ? color.Value.ToString() : "unchanged")}).");
         }
 
         Vector3 GetSpawnPosition()

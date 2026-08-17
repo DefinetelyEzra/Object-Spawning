@@ -9,7 +9,6 @@ namespace ObjectSpawning.Tests
         {
             (PrimitiveShape.Table, 5),   // tabletop + 4 legs
             (PrimitiveShape.Shelf, 6),   // 4 boards + 2 side panels
-            (PrimitiveShape.LampBase, 3), // base + stem + bulb
             (PrimitiveShape.Crate, 1),   // single body
             (PrimitiveShape.Chair, 6),   // seat + 4 legs + back
         };

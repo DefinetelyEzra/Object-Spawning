@@ -12,7 +12,7 @@ namespace ObjectSpawning
     // arrive in arbitrary units and pivot conventions -- Tripo3D makes no promises about either.
     public static class GeneratedMeshImporter
     {
-        const float TargetMaxDimension = 0.4f; // roughly matches the size of a spawned crate/lamp
+        const float TargetMaxDimension = 0.4f; // roughly matches the size of a spawned crate
         const int PolycountWarningThreshold = 150000;
 
         // result: (importedRoot, null) on success -- already parented under `parent`, scaled, and

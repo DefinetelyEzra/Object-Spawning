@@ -7,10 +7,18 @@ using UnityEngine;
 namespace ObjectSpawning
 {
     // Despite the name (kept for minimal churn from Stage 1/2), this now also covers Stage 3's
-    // procedurally-composed objects (Table/Shelf/LampBase/Crate/Chair), not just true primitives.
+    // procedurally-composed objects (Table/Shelf/Crate/Chair), not just true primitives.
     // Stage 6's Generated is a registry-bookkeeping sentinel only -- it never drives a
     // CreatePrimitive/ProceduralGeometryFactory path like the others; PrimitiveSpawner always
     // builds a generated object's placeholder as a plain cube and swaps its visuals in later.
+    // Stage 8: PointLight is a real UnityEngine.Light-carrying object (a small visible bulb
+    // sphere + a Light component) -- it participates in the exact same registry/pointer-
+    // selection/edit machinery as every other shape (see PrimitiveSpawner's BuildPointLight),
+    // rather than needing a parallel system. There used to also be a purely decorative LampBase
+    // composite here, but it was removed -- in headset testing the LLM reliably conflated "spawn
+    // a light" with the decorative lamp rather than the new functional PointLight regardless of
+    // how the two were distinguished in the prompt, so the ambiguous shape was cut instead of
+    // chasing an unreliable prompt fix.
     public enum PrimitiveShape
     {
         Cube,
@@ -18,12 +26,12 @@ namespace ObjectSpawning
         Cylinder,
         Table,
         Shelf,
-        LampBase,
         Crate,
         Chair,
         Stool,
         Bench,
         Sofa,
+        PointLight,
         Generated,
     }
 
@@ -93,13 +101,27 @@ namespace ObjectSpawning
         Delete,
         ClearAll,
         Retexture,
+
+        // Stage 8: adjusts the SCENE's directional/ambient light, not a specific object -- has no
+        // target to resolve (like ClearAll), dispatched as an early exit before pointer/last-
+        // touched resolution runs. Only triggered by an explicit scene-referring word ("room",
+        // "lighting", "ambiance", "environment", "scene") so it can never collide with an ordinary
+        // per-object edit -- "make it brighter" on a pointed-at light still goes through the
+        // normal Resize path, which PrimitiveSpawner.Resize reinterprets as intensity for a Light.
+        AdjustLighting,
     }
 
     public readonly struct EditIntent
     {
         public readonly EditAction Action;
-        public readonly Color Color;   // only meaningful for Recolor
-        public readonly bool Bigger;   // only meaningful for Resize
+
+        // Meaningful for Recolor (falls back to white if null -- ColorNaming's own established
+        // default) and for AdjustLighting (null means no color change was requested at all, which
+        // AdjustLighting -- unlike Recolor -- must be able to express, since a pure brightness
+        // command like "make the room brighter" must never silently reset the light's color).
+        public readonly Color? Color;
+
+        public readonly bool Bigger;   // only meaningful for Resize -- always has a direction
 
         // Explicit factor ("make it 10x bigger", "make it 2x smaller") -- an alternative to the
         // default fixed 1.25x/0.8x single-press step, not a combination of the two. Null means
@@ -126,10 +148,17 @@ namespace ObjectSpawning
         // should fail to produce a Retexture intent at all rather than set this to null.
         public readonly MaterialPreset? Material;
 
-        public EditIntent(EditAction action, Color color = default, bool bigger = true,
+        // Stage 8: only meaningful for AdjustLighting -- null means no brightness change was
+        // requested (as opposed to Resize's Bigger, which is always meaningful since a resize
+        // command always implies some direction). ResizeMultiplier above is reused as-is for
+        // AdjustLighting's own multiplier -- "how much" means the same thing in both contexts.
+        public readonly bool? LightBrighter;
+
+        public EditIntent(EditAction action, Color? color = null, bool bigger = true,
             SpatialRelation? relation = null, PrimitiveShape? referenceShape = null,
             float? moveDistanceMeters = null, MoveDirection? moveDirection = null,
-            float? rotateDegrees = null, MaterialPreset? material = null, float? resizeMultiplier = null)
+            float? rotateDegrees = null, MaterialPreset? material = null, float? resizeMultiplier = null,
+            bool? lightBrighter = null)
         {
             Action = action;
             Color = color;
@@ -141,6 +170,7 @@ namespace ObjectSpawning
             RotateDegrees = rotateDegrees;
             Material = material;
             ResizeMultiplier = resizeMultiplier;
+            LightBrighter = lightBrighter;
         }
     }
 
@@ -167,13 +197,13 @@ namespace ObjectSpawning
             ("desk", PrimitiveShape.Table),
             ("shelf", PrimitiveShape.Shelf),
             ("bookshelf", PrimitiveShape.Shelf),
-            ("lamp", PrimitiveShape.LampBase),
             ("crate", PrimitiveShape.Crate),
             ("chair", PrimitiveShape.Chair),
             ("stool", PrimitiveShape.Stool),
             ("bench", PrimitiveShape.Bench),
             ("sofa", PrimitiveShape.Sofa),
             ("couch", PrimitiveShape.Sofa),
+            ("light", PrimitiveShape.PointLight),
         };
 
         public static bool TryParse(string transcript, out SpawnIntent intent)
@@ -184,8 +214,8 @@ namespace ObjectSpawning
 
             var text = transcript.ToLowerInvariant();
 
-            // Leftmost mention wins (not first-in-array-order): "put a lamp on the table" must
-            // resolve the object being created as "lamp", even though "table" appears earlier in
+            // Leftmost mention wins (not first-in-array-order): "put a light on the table" must
+            // resolve the object being created as "light", even though "table" appears earlier in
             // ShapeKeywords -- the earlier-declared-but-later-spoken word isn't what's being made.
             if (!TryFindLeftmostShape(text, 0, out var shape, out var shapeIndex))
                 return false;
@@ -213,7 +243,7 @@ namespace ObjectSpawning
         }
 
         // Only recognizes a relation when there's an unambiguous second shape mention after
-        // "on"/"next to" to serve as the reference -- e.g. "put a lamp on the table". No second
+        // "on"/"next to" to serve as the reference -- e.g. "put a light on the table". No second
         // shape mention (or no relation keyword at all) just leaves Relation unset, which is the
         // graceful degradation the roadmap asks for: the object spawns at the normal default
         // position instead of guessing.
@@ -311,6 +341,8 @@ namespace ObjectSpawning
                 "next", "onto", "ground", "floor",
                 "left", "right", "forward", "ahead", "backward", "back", "up", "down",
                 "meters", "meter", "degrees", "degree", "clockwise", "counterclockwise", "around",
+                "brighter", "brighten", "lighter", "dimmer", "dim", "darker", "darken",
+                "room", "lighting", "ambiance", "ambience", "environment", "scene",
             });
             return words.ToArray();
         }
@@ -329,13 +361,24 @@ namespace ObjectSpawning
 
             var text = transcript.ToLowerInvariant();
 
-            if (ContainsWord(text, "bigger") || ContainsWord(text, "larger") || ContainsWord(text, "grow"))
+            // "brighter"/"dimmer" (and synonyms) are generic verbs here too --
+            // PrimitiveSpawner.Resize reinterprets bigger/smaller as intensity/range when the
+            // target carries a Light component (a spawned PointLight), same generic-verb-on-
+            // varying-target pattern as everything else Resize already touches. "dim it"/
+            // "brighten it" only reach here at all because TryParseLighting (checked first,
+            // requires an explicit scene word) already declined to match. "lighter"/"darker" are
+            // deliberately NOT included here (unlike in TryParseLighting, where a scene word
+            // already disambiguates them) -- out of context they're genuinely ambiguous with
+            // "less heavy"/"a darker shade", not brightness.
+            if (ContainsWord(text, "bigger") || ContainsWord(text, "larger") || ContainsWord(text, "grow") ||
+                ContainsWord(text, "brighter") || ContainsWord(text, "brighten"))
             {
                 var multiplier = TryFindMultiplier(text, out var biggerFactor) ? (float?)biggerFactor : null;
                 intent = new EditIntent(EditAction.Resize, bigger: true, resizeMultiplier: multiplier);
                 return true;
             }
-            if (ContainsWord(text, "smaller") || ContainsWord(text, "shrink"))
+            if (ContainsWord(text, "smaller") || ContainsWord(text, "shrink") ||
+                ContainsWord(text, "dimmer") || ContainsWord(text, "dim"))
             {
                 var multiplier = TryFindMultiplier(text, out var smallerFactor) ? (float?)smallerFactor : null;
                 intent = new EditIntent(EditAction.Resize, bigger: false, resizeMultiplier: multiplier);
@@ -499,6 +542,62 @@ namespace ObjectSpawning
                 return false;
 
             intent = new EditIntent(EditAction.Retexture, material: best.Value);
+            return true;
+        }
+
+        static readonly string[] SceneReferringWords =
+            { "room", "lighting", "ambiance", "ambience", "environment", "scene" };
+
+        // Stage 8: the SCENE's overall ambient/directional light, not a specific object -- gated
+        // behind an explicit scene-referring word so it can never collide with a normal per-object
+        // edit ("make it brighter" with nothing scene-related mentioned stays a plain Resize,
+        // reinterpreted by PrimitiveSpawner as intensity if the target happens to be a light).
+        // Called before TryParseEditAction in VoiceCommandController's fallback chain specifically
+        // so this more specific match wins over the generic bigger/smaller check there.
+        public static bool TryParseLighting(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+
+            var mentionsScene = false;
+            foreach (var word in SceneReferringWords)
+            {
+                if (ContainsWord(text, word))
+                {
+                    mentionsScene = true;
+                    break;
+                }
+            }
+            if (!mentionsScene)
+                return false;
+
+            bool? brighter = null;
+            if (ContainsWord(text, "brighter") || ContainsWord(text, "brighten") || ContainsWord(text, "lighter"))
+                brighter = true;
+            else if (ContainsWord(text, "dimmer") || ContainsWord(text, "dim") || ContainsWord(text, "darker") ||
+                ContainsWord(text, "darken"))
+                brighter = false;
+
+            Color? color = null;
+            foreach (var (keyword, candidate) in ColorNaming.All)
+            {
+                if (ContainsWord(text, keyword))
+                {
+                    color = candidate;
+                    break;
+                }
+            }
+
+            // A scene-word alone with no actual change requested ("nice room") isn't a command --
+            // degrade gracefully rather than guessing.
+            if (!brighter.HasValue && !color.HasValue)
+                return false;
+
+            var multiplier = TryFindMultiplier(text, out var m) ? (float?)m : null;
+            intent = new EditIntent(EditAction.AdjustLighting, color: color, lightBrighter: brighter, resizeMultiplier: multiplier);
             return true;
         }
 

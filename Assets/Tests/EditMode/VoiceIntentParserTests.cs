@@ -14,7 +14,7 @@ namespace ObjectSpawning.Tests
         [TestCase("make a desk", PrimitiveShape.Table)]
         [TestCase("spawn a shelf", PrimitiveShape.Shelf)]
         [TestCase("give me a bookshelf", PrimitiveShape.Shelf)]
-        [TestCase("make a lamp", PrimitiveShape.LampBase)]
+        [TestCase("make a light", PrimitiveShape.PointLight)]
         [TestCase("spawn a crate", PrimitiveShape.Crate)]
         [TestCase("give me a chair", PrimitiveShape.Chair)]
         public void TryParse_RecognizesShape(string transcript, PrimitiveShape expectedShape)

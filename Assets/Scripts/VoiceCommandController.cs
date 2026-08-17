@@ -184,6 +184,17 @@ namespace ObjectSpawning
 
         void TryLocalFallback(string transcript)
         {
+            // Checked first, ahead of everything else: it only ever matches when an explicit
+            // scene-referring word is present ("room"/"lighting"/"ambiance"/...), so it can never
+            // collide with a normal per-object edit -- but it DOES need to win over the generic
+            // bigger/smaller check inside TryParseEditAction for the phrases it does match
+            // ("make the room brighter" is scene-wide, not a request to resize the current object).
+            if (VoiceIntentParser.TryParseLighting(transcript, out var lightingIntent))
+            {
+                ApplyEdit(lightingIntent);
+                return;
+            }
+
             // Edit-action verbs (bigger/smaller/delete/rotate/duplicate/move) are checked before
             // shape matching, since they should win even if a shape noun also appears in the same
             // sentence ("make the table bigger" is an edit, not a request to spawn a new table).
@@ -225,6 +236,14 @@ namespace ObjectSpawning
                 return;
             }
 
+            // AdjustLighting likewise has no per-object target -- it's the scene's own
+            // directional/ambient light, not whatever's pointed at or last touched.
+            if (intent.Action == EditAction.AdjustLighting)
+            {
+                spawner.AdjustLighting(intent.LightBrighter, intent.ResizeMultiplier, intent.Color);
+                return;
+            }
+
             var target = objectSelector != null ? objectSelector.GetPointedAtObject() : null;
             if (target == null)
                 target = spawner.LastTouchedGameObject;
@@ -238,7 +257,7 @@ namespace ObjectSpawning
             switch (intent.Action)
             {
                 case EditAction.Resize: spawner.Resize(target, intent.Bigger, intent.ResizeMultiplier); break;
-                case EditAction.Recolor: spawner.Recolor(target, intent.Color); break;
+                case EditAction.Recolor: spawner.Recolor(target, intent.Color ?? Color.white); break;
                 case EditAction.Move:
                     spawner.Move(target, intent.Relation, intent.ReferenceShape,
                         intent.MoveDistanceMeters, intent.MoveDirectionValue);

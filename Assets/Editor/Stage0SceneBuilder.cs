@@ -104,6 +104,7 @@ namespace ObjectSpawning.EditorTools
             var spawnerSerialized = new SerializedObject(primitiveSpawner);
             spawnerSerialized.FindProperty("baseMaterial").objectReferenceValue = GetOrCreateBaseMaterial();
             spawnerSerialized.FindProperty("floorReference").objectReferenceValue = floor.transform;
+            spawnerSerialized.FindProperty("directionalLight").objectReferenceValue = lightComp;
 
             if (headTransform != null)
             {

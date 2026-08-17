@@ -24,6 +24,20 @@ namespace ObjectSpawning.Tests
             Assert.AreEqual(transcript, TranscriptAutocorrect.Correct(transcript));
         }
 
+        [TestCase("Create a light")]
+        [TestCase("create a cube")]
+        [TestCase("CREATE a table")]
+        public void Correct_Create_NeverCorrectedToCrate(string transcript)
+        {
+            // "create" is one edit away from "crate" (a real shape word) and would otherwise get
+            // silently corrected -- confirmed in headset testing to corrupt the local fallback's
+            // leftmost-shape-wins logic ("crate a light" resolving as a crate, not a light) when
+            // the LLM path failed for an unrelated reason.
+            var result = TranscriptAutocorrect.Correct(transcript);
+
+            Assert.AreEqual(transcript, result);
+        }
+
         [Test]
         public void Correct_UnrelatedMishearing_LeavesWordUnchanged()
         {

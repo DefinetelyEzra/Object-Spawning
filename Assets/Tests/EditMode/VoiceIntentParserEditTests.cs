@@ -97,6 +97,63 @@ namespace ObjectSpawning.Tests
             Assert.IsFalse(ok);
         }
 
+        [TestCase("make the room brighter", true)]
+        [TestCase("brighten the scene", true)]
+        [TestCase("dim the lighting", false)]
+        [TestCase("darken the environment", false)]
+        public void TryParseLighting_SceneWordWithBrightness_RecognizesAdjustLighting(string transcript, bool expectedBrighter)
+        {
+            var ok = VoiceIntentParser.TryParseLighting(transcript, out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(EditAction.AdjustLighting, intent.Action);
+            Assert.IsTrue(intent.LightBrighter.HasValue);
+            Assert.AreEqual(expectedBrighter, intent.LightBrighter.Value);
+        }
+
+        [Test]
+        public void TryParseLighting_SceneWordWithColorOnly_LeavesBrightnessUnset()
+        {
+            var ok = VoiceIntentParser.TryParseLighting("make the lighting blue", out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(EditAction.AdjustLighting, intent.Action);
+            Assert.IsFalse(intent.LightBrighter.HasValue);
+            Assert.AreEqual(Color.blue, intent.Color);
+        }
+
+        [TestCase("make it brighter")]
+        [TestCase("dim it")]
+        [TestCase("delete that")]
+        public void TryParseLighting_NoSceneWord_ReturnsFalse(string transcript)
+        {
+            var ok = VoiceIntentParser.TryParseLighting(transcript, out _);
+
+            Assert.IsFalse(ok);
+        }
+
+        [Test]
+        public void TryParseLighting_SceneWordAloneWithNoChange_ReturnsFalse()
+        {
+            var ok = VoiceIntentParser.TryParseLighting("nice room", out _);
+
+            Assert.IsFalse(ok);
+        }
+
+        [Test]
+        public void TryParseEditAction_BrighterWithNoSceneWord_IsPlainResize()
+        {
+            // Disambiguation: TryParseLighting is checked first in VoiceCommandController's own
+            // fallback chain and declines here (no scene word), so a bare "make it brighter"
+            // reaching TryParseEditAction directly must resolve as an ordinary Resize, not
+            // AdjustLighting -- confirms the two can't collide.
+            var ok = VoiceIntentParser.TryParseEditAction("make it brighter", out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(EditAction.Resize, intent.Action);
+            Assert.IsTrue(intent.Bigger);
+        }
+
         [TestCase("make it look like rusted metal", "rusted_metal")]
         [TestCase("make it wood", "wood")]
         [TestCase("give it a marble finish", "marble")]
@@ -118,7 +175,16 @@ namespace ObjectSpawning.Tests
             Assert.IsFalse(ok);
         }
 
-        [TestCase("put a lamp on the table", PrimitiveShape.LampBase, SpatialRelation.On, PrimitiveShape.Table)]
+        [Test]
+        public void TryParse_RecognizesLightShape()
+        {
+            var ok = VoiceIntentParser.TryParse("spawn a light", out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(PrimitiveShape.PointLight, intent.Shape);
+        }
+
+        [TestCase("put a light on the table", PrimitiveShape.PointLight, SpatialRelation.On, PrimitiveShape.Table)]
         [TestCase("place a crate next to the shelf", PrimitiveShape.Crate, SpatialRelation.NextTo, PrimitiveShape.Shelf)]
         public void TryParse_RecognizesSpatialRelation(string transcript, PrimitiveShape expectedShape,
             SpatialRelation expectedRelation, PrimitiveShape expectedReferenceShape)

@@ -62,7 +62,6 @@ CASES = [
     ("give me a desk", "create", "table", None, None, None, None, None, False, None),
     ("spawn a bookshelf", "create", "shelf", None, None, None, None, None, False, None),
     ("I want a large shelf", "create", "shelf", None, "large", None, None, None, False, None),
-    ("create a lamp", "create", "lamp", None, None, None, None, None, False, None),
     ("give me a crate", "create", "crate", None, None, None, None, None, False, None),
     ("spawn a big crate", "create", "crate", None, "large", None, None, None, False, None),
     ("make me a chair", "create", "chair", None, None, None, None, None, False, None),
@@ -102,7 +101,7 @@ CASES = [
     ("delete the chair", "delete", None, None, None, None, None, None, False, None),
     # Stage 5: spatial relations -- the LLM only names the relation and the reference's TYPE,
     # never a specific instance (resolving which actual object that means is client-side).
-    ("put a lamp on the table", "create", "lamp", None, None, None, "on", "table", False, None),
+    ("put a light on the table", "create", "light", None, None, None, "on", "table", False, None),
     ("place a crate next to the shelf", "create", "crate", None, None, None, "next_to", "shelf", False, None),
     ("spawn a small red cube on the crate", "create", "cube", "red", "small", None, "on", "crate", False, None),
     ("put a chair next to the table", "create", "chair", None, None, None, "next_to", "table", False, None),
@@ -143,6 +142,23 @@ CASES = [
     # get pulled into retexture just because a material also happens to be describable by color.
     ("turn it red", "recolor", None, "red", None, None, None, None, False, None),
     ("make it blue", "recolor", None, "blue", None, None, None, None, False, None),
+    # Stage 8: "light" is a real point-light shape -- "lamp" was removed after headset testing
+    # showed the LLM reliably conflated it with light regardless of prompt wording, so both
+    # words should now map to the same "light" shape.
+    ("spawn a light", "create", "light", None, None, None, None, None, False, None),
+    ("give me a bright light", "create", "light", None, None, None, None, None, False, None),
+    ("spawn a lamp", "create", "light", None, None, None, None, None, False, None),
+    # adjust_lighting -- reuses size_delta/color, only when the phrase clearly refers to the
+    # scene/room/lighting as a whole, not a specific object.
+    ("make the room brighter", "adjust_lighting", None, None, None, "bigger", None, None, False, None),
+    ("dim the lighting", "adjust_lighting", None, None, None, "smaller", None, None, False, None),
+    ("brighten the scene", "adjust_lighting", None, None, None, "bigger", None, None, False, None),
+    ("make the lighting feel warm", "adjust_lighting", None, "orange", None, None, None, None, False, None),
+    ("change the ambiance to blue", "adjust_lighting", None, "blue", None, None, None, None, False, None),
+    # Disambiguation -- a bare "make it brighter" with no scene reference must stay a plain
+    # per-object resize, never adjust_lighting.
+    ("make it brighter", "resize", None, None, None, "bigger", None, None, False, None),
+    ("dim it", "resize", None, None, None, "smaller", None, None, False, None),
 ]
 
 

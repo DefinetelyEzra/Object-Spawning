@@ -86,6 +86,161 @@ namespace ObjectSpawning.Tests
         }
 
         [Test]
+        public void Spawn_PointLight_CreatesRealLightComponent()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+            ExpectMaterialInstantiateWarning();
+
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale));
+
+            Assert.IsNotNull(target);
+            Assert.IsTrue(target.TryGetComponent<Light>(out var light));
+            Assert.AreEqual(LightType.Point, light.type);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Spawn_PointLight_CapEnforced_RefusesFifthLight()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+            var spawned = new System.Collections.Generic.List<GameObject>();
+
+            for (var i = 0; i < 4; i++)
+            {
+                ExpectMaterialInstantiateWarning();
+                spawned.Add(spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale)));
+            }
+
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("Point light cap.*"));
+            var fifth = spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale));
+
+            Assert.IsNull(fifth);
+
+            foreach (var obj in spawned)
+                Object.DestroyImmediate(obj);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Resize_LightTarget_AdjustsIntensityInsteadOfScale()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+            ExpectMaterialInstantiateWarning();
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale));
+            var light = target.GetComponent<Light>();
+            var beforeScale = target.transform.localScale;
+            var beforeIntensity = light.intensity;
+
+            spawner.Resize(target, bigger: true);
+
+            Assert.AreEqual(beforeScale, target.transform.localScale);
+            Assert.Greater(light.intensity, beforeIntensity);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Recolor_LightTarget_SetsLightColor()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+            ExpectMaterialInstantiateWarning();
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale));
+
+            // No new "Instantiating material" warning expected here -- same reasoning as
+            // Recolor_ChangesAllRendererColors: the renderer's material was already instanced
+            // during Spawn above.
+            spawner.Recolor(target, Color.red);
+
+            Assert.AreEqual(Color.red, target.GetComponent<Light>().color);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Recolor_LightTarget_SetsBulbEmissionColor()
+        {
+            // The bulb's own surface sits essentially at its Light's origin and would otherwise
+            // blow out to white under normal lit shading regardless of base color -- emission
+            // bypasses that (confirmed against a real headset report of a white-looking bulb).
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+            ExpectMaterialInstantiateWarning();
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.PointLight, Color.white, VoiceIntentParser.DefaultScale));
+
+            spawner.Recolor(target, Color.red);
+
+            var material = target.GetComponent<Renderer>().material;
+            Assert.IsTrue(material.IsKeywordEnabled("_EMISSION"));
+            Assert.AreEqual(Color.red, material.GetColor("_EmissionColor"));
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void AdjustLighting_NoDirectionalLightWired_DoesNotThrow()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("No directional light wired.*"));
+            Assert.DoesNotThrow(() => spawner.AdjustLighting(true, null, Color.blue));
+
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void AdjustLighting_Brighter_IncreasesDirectionalLightIntensity()
+        {
+            var spawnerGO = new GameObject("TestSpawner");
+            var spawner = spawnerGO.AddComponent<PrimitiveSpawner>();
+            var lightGO = new GameObject("TestDirectionalLight");
+            var light = lightGO.AddComponent<Light>();
+            light.intensity = 1f;
+
+            var serialized = new UnityEditor.SerializedObject(spawner);
+            serialized.FindProperty("directionalLight").objectReferenceValue = light;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+
+            spawner.AdjustLighting(true, null, null);
+
+            Assert.Greater(light.intensity, 1f);
+
+            Object.DestroyImmediate(lightGO);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void AdjustLighting_ColorOnly_ChangesColorButNotIntensity()
+        {
+            var spawnerGO = new GameObject("TestSpawner");
+            var spawner = spawnerGO.AddComponent<PrimitiveSpawner>();
+            var lightGO = new GameObject("TestDirectionalLight");
+            var light = lightGO.AddComponent<Light>();
+            light.intensity = 1f;
+
+            var serialized = new UnityEditor.SerializedObject(spawner);
+            serialized.FindProperty("directionalLight").objectReferenceValue = light;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+
+            spawner.AdjustLighting(null, null, Color.blue);
+
+            Assert.AreEqual(1f, light.intensity, 0.0001f);
+            Assert.AreEqual(Color.blue, light.color);
+
+            Object.DestroyImmediate(lightGO);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
         public void Recolor_ChangesAllRendererColors()
         {
             var (spawnerGO, spawner, target) = SpawnOne();

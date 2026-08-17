@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace ObjectSpawning
 {
@@ -16,6 +17,16 @@ namespace ObjectSpawning
         // vocabulary (e.g. a 2-letter word can never be "close enough" to trigger a correction).
         const int MaxDistanceDivisor = 3;
         const int MinCorrectableLength = 3;
+
+        // "create" is one edit away from "crate" (a real shape noun) and would otherwise get
+        // silently corrected into it every single time -- confirmed in headset testing: "Create
+        // a light" -> "crate a light", which is harmless when the LLM parses it (it understands
+        // "crate a light" as a create command regardless), but corrupts the LOCAL fallback's
+        // leftmost-shape-wins logic into resolving shape=crate instead of the real shape whenever
+        // the LLM path fails for any reason. Denylisted the same way "spawn" already implicitly
+        // is (never a correction target), just explicit here since proximity to "crate" would
+        // otherwise pull it in.
+        static readonly HashSet<string> NeverCorrect = new() { "create" };
 
         public static string Correct(string transcript)
         {
@@ -42,6 +53,9 @@ namespace ObjectSpawning
                 return word;
 
             var lower = word.Substring(start, end - start).ToLowerInvariant();
+
+            if (NeverCorrect.Contains(lower))
+                return word;
 
             string bestMatch = null;
             var bestDistance = int.MaxValue;

@@ -14,7 +14,6 @@ namespace ObjectSpawning
         {
             PrimitiveShape.Table => BuildTable(),
             PrimitiveShape.Shelf => BuildShelf(),
-            PrimitiveShape.LampBase => BuildLampBase(),
             PrimitiveShape.Crate => BuildCrate(),
             PrimitiveShape.Chair => BuildChair(),
             PrimitiveShape.Stool => BuildStool(),
@@ -71,32 +70,6 @@ namespace ObjectSpawning
             var sideX = (width - sideThickness) / 2f;
             AddPanel(root.transform, new Vector3(sideX, height / 2f, 0f), new Vector3(sideThickness, height, depth), "SidePanel_R");
             AddPanel(root.transform, new Vector3(-sideX, height / 2f, 0f), new Vector3(sideThickness, height, depth), "SidePanel_L");
-
-            return root;
-        }
-
-        static GameObject BuildLampBase()
-        {
-            const float baseRadius = 0.15f;
-            const float baseHeight = 0.05f;
-            const float stemRadius = 0.03f;
-            const float stemHeight = 0.5f;
-            const float bulbRadius = 0.12f;
-
-            var root = new GameObject("LampBase");
-
-            var baseDisc = CreatePart(PrimitiveType.Cylinder, root.transform, "Base");
-            baseDisc.transform.localPosition = new Vector3(0f, baseHeight / 2f, 0f);
-            // Default cylinder is radius 0.5, height 2 -- scale.y is a multiplier on that height.
-            baseDisc.transform.localScale = new Vector3(baseRadius * 2f, baseHeight / 2f, baseRadius * 2f);
-
-            var stem = CreatePart(PrimitiveType.Cylinder, root.transform, "Stem");
-            stem.transform.localPosition = new Vector3(0f, baseHeight + stemHeight / 2f, 0f);
-            stem.transform.localScale = new Vector3(stemRadius * 2f, stemHeight / 2f, stemRadius * 2f);
-
-            var bulb = CreatePart(PrimitiveType.Sphere, root.transform, "Bulb");
-            bulb.transform.localPosition = new Vector3(0f, baseHeight + stemHeight + bulbRadius * 0.6f, 0f);
-            bulb.transform.localScale = Vector3.one * (bulbRadius * 2f);
 
             return root;
         }
