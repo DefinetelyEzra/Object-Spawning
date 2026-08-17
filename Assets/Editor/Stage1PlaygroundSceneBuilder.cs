@@ -228,6 +228,31 @@ namespace ObjectSpawning.EditorTools
             BuildWall("Wall_West", new Vector3(-RoomHalfSize, wallY, 0f), new Vector3(WallThickness, WallHeight, span), wallMat);
 
             BuildSkybox();
+
+            // Baked after the skybox/walls exist so the bake actually captures this finished room
+            // rather than an empty scene. See Stage0SceneBuilder's own copy of this method for the
+            // full "why baked, why box projection" reasoning -- same rationale applies here.
+            BuildReflectionProbe(new Vector3(0f, wallY, 0f), new Vector3(RoomHalfSize * 2f, WallHeight, RoomHalfSize * 2f));
+        }
+
+        const string ReflectionProbeFolder = "Assets/Reflections";
+
+        static void BuildReflectionProbe(Vector3 center, Vector3 size)
+        {
+            var probeGO = new GameObject("Room Reflection Probe", typeof(ReflectionProbe));
+            probeGO.transform.position = center;
+
+            var probe = probeGO.GetComponent<ReflectionProbe>();
+            probe.mode = ReflectionProbeMode.Baked;
+            probe.boxProjection = true;
+            probe.size = size;
+            probe.resolution = 128;
+            probe.intensity = 1f;
+
+            if (!AssetDatabase.IsValidFolder(ReflectionProbeFolder))
+                AssetDatabase.CreateFolder("Assets", "Reflections");
+
+            UnityEditor.Lightmapping.BakeReflectionProbe(probe, $"{ReflectionProbeFolder}/PlaygroundRoomProbe.exr");
         }
 
         static void BuildWall(string name, Vector3 position, Vector3 scale, Material mat)

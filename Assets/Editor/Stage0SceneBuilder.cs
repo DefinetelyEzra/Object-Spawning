@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering;
 using UnityEngine.XR.Interaction.Toolkit.Inputs.Readers;
 using UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning;
 
@@ -78,6 +79,7 @@ namespace ObjectSpawning.EditorTools
             floor.transform.position = Vector3.zero;
 
             BuildBoundaryColliders(floor);
+            BuildReflectionProbe(floor);
 
             var simulatorPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(InteractionSimulatorPrefabPath);
             if (simulatorPrefab != null)
@@ -270,6 +272,46 @@ namespace ObjectSpawning.EditorTools
             var wall = new GameObject(name, typeof(BoxCollider));
             wall.transform.position = position;
             wall.GetComponent<BoxCollider>().size = size;
+        }
+
+        const string ReflectionProbeFolder = "Assets/Reflections";
+
+        // Stage 7 follow-up: retextured metallic/chrome objects looked flat rather than shiny --
+        // URP's metallic/smoothness surfaces read their specular highlight from environment
+        // reflections, and with no reflection probe in the scene they only ever saw the generic
+        // default skybox, not this room. Baked (not realtime) to keep VR's runtime GPU budget
+        // untouched -- this room's geometry never moves, so a one-time bake is strictly better
+        // than paying a 6-face render every refresh for a static room. Box projection makes the
+        // reflection warp to the room's own physical bounds instead of looking like it's
+        // reflecting something infinitely far away, which matters most exactly for small rooms
+        // like this one.
+        static void BuildReflectionProbe(GameObject floor)
+        {
+            var floorRenderer = floor.GetComponentInChildren<Renderer>();
+            if (floorRenderer == null)
+            {
+                Debug.LogWarning("[Stage0SceneBuilder] Floor has no Renderer -- cannot size reflection probe, skipping.");
+                return;
+            }
+
+            var bounds = floorRenderer.bounds;
+            var center = new Vector3(bounds.center.x, bounds.min.y + BoundaryWallHeight / 2f, bounds.center.z);
+            var size = new Vector3(bounds.size.x, BoundaryWallHeight, bounds.size.z);
+
+            var probeGO = new GameObject("Room Reflection Probe", typeof(ReflectionProbe));
+            probeGO.transform.position = center;
+
+            var probe = probeGO.GetComponent<ReflectionProbe>();
+            probe.mode = ReflectionProbeMode.Baked;
+            probe.boxProjection = true;
+            probe.size = size;
+            probe.resolution = 128; // small enclosed room -- no need for a large/expensive cubemap
+            probe.intensity = 1f;
+
+            if (!AssetDatabase.IsValidFolder(ReflectionProbeFolder))
+                AssetDatabase.CreateFolder("Assets", "Reflections");
+
+            UnityEditor.Lightmapping.BakeReflectionProbe(probe, $"{ReflectionProbeFolder}/Stage0RoomProbe.exr");
         }
 
         const string BaseMaterialFolder = "Assets/Materials";
