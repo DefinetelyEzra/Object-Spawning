@@ -37,6 +37,7 @@ namespace ObjectSpawning
             public string material;    // retexture only
             public string size;        // create only (absolute)
             public string size_delta;  // resize only ("bigger" | "smaller")
+            public float resize_multiplier; // resize only, paired with size_delta -- 0 means unset, same reasoning as distance_meters/degrees
             public string relation;        // create or move ("on" | "next_to" | "on_ground")
             public string reference_shape; // create or move, only with relation set
             public float distance_meters;  // move only, paired with direction -- 0 means unset (JsonUtility has no nullable float, and no one asks to move 0 meters)
@@ -152,15 +153,20 @@ namespace ObjectSpawning
         }
 
         // The LLM occasionally omits `action` even when it isn't a create command -- observed
-        // for resize specifically (size_delta present, action missing). size_delta/prompt are
-        // each scoped by the schema to exactly one action, so their presence is unambiguous
-        // evidence of intent regardless of whether the model remembered to set action too.
+        // for resize (size_delta present, action missing) and, in headset testing, for
+        // retexture too (material present, action missing -- every "make it wood"/"marble"/
+        // "stone" test came back this way, and only survived because the local keyword fallback
+        // happened to also catch the same word). size_delta/prompt/material are each scoped by
+        // the schema to exactly one action, so their presence is unambiguous evidence of intent
+        // regardless of whether the model remembered to set action too.
         static string InferAction(ParseIntentResponseBody response)
         {
             if (!string.IsNullOrEmpty(response.action))
                 return response.action.ToLowerInvariant();
             if (!string.IsNullOrEmpty(response.size_delta))
                 return "resize";
+            if (!string.IsNullOrEmpty(response.material))
+                return "retexture";
             if (!string.IsNullOrEmpty(response.prompt))
                 return "generate";
             return "create";
@@ -191,7 +197,8 @@ namespace ObjectSpawning
             {
                 case "resize":
                     var bigger = response.size_delta?.ToLowerInvariant() != "smaller";
-                    intent = new EditIntent(EditAction.Resize, bigger: bigger);
+                    var resizeMultiplier = response.resize_multiplier != 0f ? (float?)response.resize_multiplier : null;
+                    intent = new EditIntent(EditAction.Resize, bigger: bigger, resizeMultiplier: resizeMultiplier);
                     return true;
                 case "recolor":
                     ColorNaming.TryGetColor(response.color, out var color);

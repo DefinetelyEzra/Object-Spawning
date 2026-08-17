@@ -160,6 +160,20 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                 description="Only for action=resize. Whether to grow or shrink the target. "
                              "Defaults to bigger if omitted.",
             ),
+            "resize_multiplier": types.Schema(
+                type="NUMBER",
+                description="Only for action=resize, and only when the user gives a SPECIFIC "
+                             "factor ('make it 10 times bigger', 'make it 3x the size', 'shrink "
+                             "it by half' -> 2, 'make it a quarter of the size' -> 4, 'double it' "
+                             "-> 2, 'triple it' -> 3). Always a positive number expressing the "
+                             "factor itself, never pre-negated or inverted -- the client applies "
+                             "it as a straight multiply for bigger and a divide for smaller, so "
+                             "'make it 2x smaller' means half size (set resize_multiplier=2, "
+                             "size_delta=smaller), not literally multiplied by 2. Leave unset for "
+                             "a plain 'make it bigger'/'make it smaller' with no specific amount "
+                             "-- the client applies its own default single-step size change in "
+                             "that case, don't guess a number yourself.",
+            ),
             "relation": types.Schema(
                 type="STRING",
                 enum=["on", "next_to", "on_ground"],
@@ -248,7 +262,11 @@ SYSTEM_PROMPT = (
     "For edit commands about an existing object ('make it bigger', 'turn it red', 'rotate it', "
     "'duplicate that', 'delete it', 'move it here'), set action to resize/recolor/rotate/duplicate/"
     "delete/move as appropriate. Leave shape unset for edit actions -- which object it applies to "
-    "is resolved elsewhere, not from the transcript's wording. For move: if the user names a "
+    "is resolved elsewhere, not from the transcript's wording. For resize: if the user gives a "
+    "specific factor ('make it 10 times bigger', 'shrink it by half', 'double it'), also set "
+    "resize_multiplier per that field's own sign/rounding convention (always positive, always the "
+    "factor itself); otherwise leave it unset for the client's own default single-step change. "
+    "For move: if the user names a "
     "direction ('move it left', 'move it 3 meters to the left', 'shift it back half a meter'), "
     "set direction -- and distance_meters too if they gave a specific number, otherwise leave "
     "distance_meters unset (the client applies its own default nudge distance). If instead they "

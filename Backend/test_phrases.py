@@ -75,6 +75,12 @@ CASES = [
     ("that's too small, make it larger", "resize", None, None, None, "bigger", None, None, False, None),
     ("make it smaller", "resize", None, None, None, "smaller", None, None, False, None),
     ("shrink it a bit", "resize", None, None, None, "smaller", None, None, False, None),
+    # resize_multiplier isn't formally asserted below (same as distance_meters/degrees above --
+    # check the printed raw result for the actual value), just confirming action/size_delta still
+    # resolve correctly when a specific factor is mentioned.
+    ("make it 10 times bigger", "resize", None, None, None, "bigger", None, None, False, None),
+    ("shrink it by half", "resize", None, None, None, "smaller", None, None, False, None),
+    ("double it", "resize", None, None, None, "bigger", None, None, False, None),
     ("turn it red", "recolor", None, "red", None, None, None, None, False, None),
     ("make it blue", "recolor", None, "blue", None, None, None, None, False, None),
     ("change its color to green", "recolor", None, "green", None, None, None, None, False, None),

@@ -423,14 +423,23 @@ namespace ObjectSpawning
                 targetCenter.z - newBounds.center.z);
         }
 
-        public void Resize(GameObject target, bool bigger)
+        // multiplier is an explicit factor ("make it 10x bigger" -> multiplier=10, "make it 2x
+        // smaller" -> multiplier=2), applied as a straight multiply when bigger and a divide when
+        // not -- matching how people actually say "N times smaller" (half size, not 1/N smaller).
+        // Null keeps the old fixed single-press 1.25x/0.8x step.
+        public void Resize(GameObject target, bool bigger, float? multiplier = null)
         {
             if (target == null)
                 return;
 
-            target.transform.localScale *= bigger ? 1.25f : 0.8f;
+            var factor = multiplier.HasValue
+                ? (bigger ? multiplier.Value : 1f / multiplier.Value)
+                : (bigger ? 1.25f : 0.8f);
+
+            target.transform.localScale *= factor;
             LastTouchedGameObject = target;
-            Debug.Log($"[PrimitiveSpawner] Resized {target.name} ({(bigger ? "bigger" : "smaller")}).");
+            Debug.Log($"[PrimitiveSpawner] Resized {target.name} ({(bigger ? "bigger" : "smaller")}" +
+                $"{(multiplier.HasValue ? $", {multiplier.Value:0.##}x" : "")}).");
         }
 
         public void Recolor(GameObject target, Color color)
@@ -443,30 +452,68 @@ namespace ObjectSpawning
             Debug.Log($"[PrimitiveSpawner] Recolored {target.name}.");
         }
 
-        // Stage 7: applies a curated PBR preset (base color + metallic + smoothness, no texture
-        // image) to every renderer on the target -- works the same way whether the target is a
-        // plain primitive, a ProceduralGeometryFactory composite, or a Stage 6 generated mesh.
-        // For a generated mesh this deliberately replaces its downloaded texture with the flat
-        // preset color, mirroring the roadmap's "assign from a curated library" alternative to
-        // full generative retexturing.
+        // Stage 7: applies a curated PBR preset (base color + metallic + smoothness, plus an
+        // optional procedurally-generated detail texture -- see ProceduralTextureFactory) to
+        // every renderer on the target -- works the same way whether the target is a plain
+        // primitive, a ProceduralGeometryFactory composite, or a Stage 6 generated mesh. For a
+        // generated mesh this deliberately replaces its downloaded texture with the preset,
+        // mirroring the roadmap's "assign from a curated library" alternative to full generative
+        // retexturing.
         public void Retexture(GameObject target, MaterialPreset preset)
         {
             if (target == null)
                 return;
 
+            // Some presets (wood, marble, stone, ...) get a small procedurally-generated detail
+            // texture on top of the flat PBR parameters -- see ProceduralTextureFactory for which
+            // ones and why. Generated once per material name, not per call.
+            var detailTexture = ProceduralTextureFactory.GetOrCreate(preset);
+
             foreach (var renderer in target.GetComponentsInChildren<Renderer>())
             {
                 var instance = baseMaterial != null ? Instantiate(baseMaterial) : new Material(renderer.sharedMaterial);
-                instance.color = preset.BaseColor;
                 if (instance.HasProperty("_Metallic"))
                     instance.SetFloat("_Metallic", preset.Metallic);
                 if (instance.HasProperty("_Smoothness"))
                     instance.SetFloat("_Smoothness", preset.Smoothness);
+
+                if (detailTexture != null && instance.HasProperty("_BaseMap"))
+                {
+                    // The generated texture already bakes in preset.BaseColor with per-pixel
+                    // variation -- URP multiplies _BaseMap by the _BaseColor tint, so leaving the
+                    // tint at preset.BaseColor here would double-apply it (darker, oversaturated).
+                    instance.SetTexture("_BaseMap", detailTexture);
+                    instance.SetTextureScale("_BaseMap", ComputeDetailTiling(renderer));
+                    instance.color = Color.white;
+                }
+                else
+                {
+                    instance.color = preset.BaseColor;
+                }
+
                 renderer.material = instance;
             }
 
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Retextured {target.name} as {preset.Name}.");
+        }
+
+        // Roughly matches the detail texture's apparent "print size" across very differently
+        // sized parts (a thin chair leg vs. a tabletop) -- a fixed tile count either smears into
+        // an illegibly huge blob on large surfaces or looks like noise on tiny ones. The
+        // generated texture is exactly seamless (see ProceduralTextureFactory), so any repeat
+        // count blends cleanly with no visible seam. This can't correct anisotropic stretch on a
+        // single non-uniformly-scaled part, though (a table leg's tall thin side faces still
+        // stretch the pattern along their long axis) -- a single _BaseMap tiling value applies to
+        // the whole mesh's UV set, not per-face, and fixing that fully would need triplanar
+        // (world-space) texture projection instead of relying on primitive UVs at all.
+        static Vector2 ComputeDetailTiling(Renderer renderer)
+        {
+            const float metersPerTile = 0.3f;
+            var size = renderer.bounds.size;
+            var largest = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+            var tiles = Mathf.Max(1f, Mathf.Round(largest / metersPerTile));
+            return new Vector2(tiles, tiles);
         }
 
         // Stage "advanced instructions": distanceMeters+direction ("move it 3 meters to the

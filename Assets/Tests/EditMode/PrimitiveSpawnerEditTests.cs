@@ -58,6 +58,34 @@ namespace ObjectSpawning.Tests
         }
 
         [Test]
+        public void Resize_BiggerWithMultiplier_ScalesByExactFactor()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.transform.localScale;
+
+            spawner.Resize(target, bigger: true, multiplier: 10f);
+
+            Assert.AreEqual(before.x * 10f, target.transform.localScale.x, 0.001f);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Resize_SmallerWithMultiplier_ScalesByExactDivisor()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.transform.localScale;
+
+            spawner.Resize(target, bigger: false, multiplier: 2f);
+
+            Assert.AreEqual(before.x * 0.5f, target.transform.localScale.x, 0.001f);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
         public void Recolor_ChangesAllRendererColors()
         {
             var (spawnerGO, spawner, target) = SpawnOne();

@@ -19,6 +19,30 @@ namespace ObjectSpawning.Tests
             Assert.AreEqual(expectedBigger, intent.Bigger);
         }
 
+        [TestCase("make it 10x bigger", true, 10f)]
+        [TestCase("make it 10 x bigger", true, 10f)]
+        [TestCase("make it 3 times bigger", true, 3f)]
+        [TestCase("make it 2x smaller", false, 2f)]
+        public void TryParseEditAction_RecognizesResizeMultiplier(string transcript, bool expectedBigger, float expectedMultiplier)
+        {
+            var ok = VoiceIntentParser.TryParseEditAction(transcript, out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(EditAction.Resize, intent.Action);
+            Assert.AreEqual(expectedBigger, intent.Bigger);
+            Assert.IsTrue(intent.ResizeMultiplier.HasValue);
+            Assert.AreEqual(expectedMultiplier, intent.ResizeMultiplier.Value);
+        }
+
+        [Test]
+        public void TryParseEditAction_ResizeWithNoMultiplier_LeavesMultiplierUnset()
+        {
+            var ok = VoiceIntentParser.TryParseEditAction("make it bigger", out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.IsFalse(intent.ResizeMultiplier.HasValue);
+        }
+
         [TestCase("delete that", EditAction.Delete)]
         [TestCase("remove it", EditAction.Delete)]
         [TestCase("duplicate that", EditAction.Duplicate)]

@@ -79,7 +79,7 @@ namespace ObjectSpawning
                 "  Y Button  -  Show / hide this help\n\n" +
                 "Try saying:\n" +
                 "  \"spawn a red sphere\" / \"spawn a sofa\"\n" +
-                "  \"make it bigger\"\n" +
+                "  \"make it bigger\" / \"make it 10 times bigger\"\n" +
                 "  \"move it 3 meters to the left\"\n" +
                 "  \"rotate it 180 degrees\"\n" +
                 "  \"move it onto the table\"\n" +

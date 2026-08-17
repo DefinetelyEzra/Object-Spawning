@@ -100,6 +100,13 @@ namespace ObjectSpawning
         public readonly EditAction Action;
         public readonly Color Color;   // only meaningful for Recolor
         public readonly bool Bigger;   // only meaningful for Resize
+
+        // Explicit factor ("make it 10x bigger", "make it 2x smaller") -- an alternative to the
+        // default fixed 1.25x/0.8x single-press step, not a combination of the two. Null means
+        // "no specific factor given", which callers should treat as that old fixed-step default.
+        // Bigger applies this as a straight multiplier (10x bigger -> *10); smaller applies it as
+        // a divisor (2x smaller -> half size, i.e. *0.5), matching how people actually say it.
+        public readonly float? ResizeMultiplier;
         public readonly SpatialRelation? Relation;       // only meaningful for Move
         public readonly PrimitiveShape? ReferenceShape;  // only meaningful for Move
 
@@ -122,7 +129,7 @@ namespace ObjectSpawning
         public EditIntent(EditAction action, Color color = default, bool bigger = true,
             SpatialRelation? relation = null, PrimitiveShape? referenceShape = null,
             float? moveDistanceMeters = null, MoveDirection? moveDirection = null,
-            float? rotateDegrees = null, MaterialPreset? material = null)
+            float? rotateDegrees = null, MaterialPreset? material = null, float? resizeMultiplier = null)
         {
             Action = action;
             Color = color;
@@ -133,6 +140,7 @@ namespace ObjectSpawning
             MoveDirectionValue = moveDirection;
             RotateDegrees = rotateDegrees;
             Material = material;
+            ResizeMultiplier = resizeMultiplier;
         }
     }
 
@@ -298,7 +306,7 @@ namespace ObjectSpawning
                 words.AddRange(material.Name.Replace('_', ' ').Split(' '));
             words.AddRange(new[]
             {
-                "bigger", "larger", "grow", "smaller", "shrink",
+                "bigger", "larger", "grow", "smaller", "shrink", "times",
                 "big", "large", "small", "tiny",
                 "next", "onto", "ground", "floor",
                 "left", "right", "forward", "ahead", "backward", "back", "up", "down",
@@ -323,12 +331,14 @@ namespace ObjectSpawning
 
             if (ContainsWord(text, "bigger") || ContainsWord(text, "larger") || ContainsWord(text, "grow"))
             {
-                intent = new EditIntent(EditAction.Resize, bigger: true);
+                var multiplier = TryFindMultiplier(text, out var biggerFactor) ? (float?)biggerFactor : null;
+                intent = new EditIntent(EditAction.Resize, bigger: true, resizeMultiplier: multiplier);
                 return true;
             }
             if (ContainsWord(text, "smaller") || ContainsWord(text, "shrink"))
             {
-                intent = new EditIntent(EditAction.Resize, bigger: false);
+                var multiplier = TryFindMultiplier(text, out var smallerFactor) ? (float?)smallerFactor : null;
+                intent = new EditIntent(EditAction.Resize, bigger: false, resizeMultiplier: multiplier);
                 return true;
             }
 
@@ -418,6 +428,18 @@ namespace ObjectSpawning
         {
             var match = Regex.Match(text, @"\d+(\.\d+)?");
             if (match.Success && float.TryParse(match.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                return true;
+            value = 0f;
+            return false;
+        }
+
+        // "10x bigger" / "10 x bigger" / "10 times bigger" -- only digit-form numbers, same
+        // "dumb local fallback" scope as TryFindNumber; the backend LLM handles spoken-word
+        // numbers ("ten times bigger").
+        static bool TryFindMultiplier(string text, out float value)
+        {
+            var match = Regex.Match(text, @"(\d+(?:\.\d+)?)\s*(?:x\b|times\b)");
+            if (match.Success && float.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
                 return true;
             value = 0f;
             return false;

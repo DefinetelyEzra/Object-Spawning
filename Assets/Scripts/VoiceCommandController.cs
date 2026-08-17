@@ -237,7 +237,7 @@ namespace ObjectSpawning
 
             switch (intent.Action)
             {
-                case EditAction.Resize: spawner.Resize(target, intent.Bigger); break;
+                case EditAction.Resize: spawner.Resize(target, intent.Bigger, intent.ResizeMultiplier); break;
                 case EditAction.Recolor: spawner.Recolor(target, intent.Color); break;
                 case EditAction.Move:
                     spawner.Move(target, intent.Relation, intent.ReferenceShape,
