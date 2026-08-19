@@ -637,6 +637,34 @@ namespace ObjectSpawning
             };
         }
 
+        // Repositions target's Y so its bottom rests on the floor, keeping whatever X/Z it's
+        // currently at -- reuses the exact same floor math every other placement path already
+        // uses (ComputeOnGroundPosition/GetFloorY), just anchored to the object's own current
+        // position instead of a fresh spawn position. For the ray-grab feature: dropping a held
+        // object should always land it solidly on the floor, never mid-air or clipped into it,
+        // regardless of where along the beam it was released.
+        public void SnapToGround(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            target.transform.position = ComputeOnGroundPosition(target, target.transform.position, GetFloorY());
+        }
+
+        // Marks target as the active edit target without moving/resizing/recoloring it -- for
+        // interactions (like ray-grabbing) that already changed the object some other way and
+        // just need voice commands ("make it bigger") to target it afterward, the same way
+        // Spawn/Delete already keep LastTouchedGameObject in sync with whatever the player last
+        // interacted with.
+        public void MarkAsTouched(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            LastTouchedGameObject = target;
+            objectSelector?.ClearSelection();
+        }
+
         // degrees defaults to a single fixed-size turn (the old always-90-degrees behavior) when
         // the caller has no specific amount to give ("rotate it" with no number). A specific
         // amount ("rotate it 180 degrees") overrides that entirely, sign and all.

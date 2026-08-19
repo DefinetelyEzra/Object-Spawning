@@ -7,7 +7,8 @@
         "VoiceSDK.Dictation.Runtime",
         "Meta.Wit.Dictation",
         "Meta.WitAi",
-        "glTFast"
+        "glTFast",
+        "Unity.XR.Interaction.Toolkit"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

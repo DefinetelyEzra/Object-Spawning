@@ -73,10 +73,13 @@ namespace ObjectSpawning
                 "CONTROLS\n\n" +
                 "RIGHT HAND\n" +
                 "  Trigger  -  Spawn a cube\n" +
-                "  B Button  -  Hold + point to select an object\n\n" +
+                "  B Button  -  Hold + point to select an object\n" +
+                "  Grip  -  Hold + point to grab and carry an object\n" +
+                "  A Button  -  While grabbing, rotate 45°\n\n" +
                 "LEFT HAND\n" +
                 "  Trigger  -  Hold to talk (voice command)\n" +
-                "  Y Button  -  Show / hide this help\n\n" +
+                "  Y Button  -  Show / hide this help\n" +
+                "  X Button  -  While grabbing, rotate -45°\n\n" +
                 "Try saying:\n" +
                 "  \"spawn a red sphere\" / \"spawn a sofa\"\n" +
                 "  \"make it bigger\" / \"make it 10 times bigger\"\n" +

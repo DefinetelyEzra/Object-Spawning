@@ -137,6 +137,15 @@ namespace ObjectSpawning.EditorTools
                 var spawnerObjectSelectorSerialized = new SerializedObject(primitiveSpawner);
                 spawnerObjectSelectorSerialized.FindProperty("objectSelector").objectReferenceValue = objectSelector;
                 spawnerObjectSelectorSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                var moverGO = new GameObject("ObjectMover");
+                moverGO.transform.SetParent(rightController, false);
+                var objectMover = moverGO.AddComponent<ObjectMover>();
+
+                var moverSerialized = new SerializedObject(objectMover);
+                moverSerialized.FindProperty("pointerOrigin").objectReferenceValue = moverGO.transform;
+                moverSerialized.FindProperty("primitiveSpawner").objectReferenceValue = primitiveSpawner;
+                moverSerialized.ApplyModifiedPropertiesWithoutUndo();
             }
             else
             {

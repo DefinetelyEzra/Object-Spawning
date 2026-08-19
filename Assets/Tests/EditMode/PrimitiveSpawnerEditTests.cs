@@ -442,6 +442,63 @@ namespace ObjectSpawning.Tests
         }
 
         [Test]
+        public void SnapToGround_ObjectAboveFloor_PlacesBottomAtFloorLevel()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            ExpectMaterialInstantiateWarning();
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, VoiceIntentParser.DefaultScale));
+            target.transform.position += new Vector3(0.3f, 5f, -0.2f); // simulate having been carried through the air
+            var beforeX = target.transform.position.x;
+            var beforeZ = target.transform.position.z;
+
+            spawner.SnapToGround(target);
+
+            var renderer = target.GetComponent<Renderer>();
+            Assert.AreEqual(0f, renderer.bounds.min.y, 0.001f);
+            // X/Z should stay exactly where it was released -- only Y is corrected.
+            Assert.AreEqual(beforeX, target.transform.position.x, 0.001f);
+            Assert.AreEqual(beforeZ, target.transform.position.z, 0.001f);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void SnapToGround_NullTarget_DoesNotThrow()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            Assert.DoesNotThrow(() => spawner.SnapToGround(null));
+
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void MarkAsTouched_SetsLastTouchedGameObject()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            ExpectMaterialInstantiateWarning();
+            var first = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, VoiceIntentParser.DefaultScale));
+            ExpectMaterialInstantiateWarning();
+            var second = spawner.Spawn(new SpawnIntent(PrimitiveShape.Sphere, Color.white, VoiceIntentParser.DefaultScale));
+
+            Assert.AreEqual(second, spawner.LastTouchedGameObject);
+
+            spawner.MarkAsTouched(first);
+
+            Assert.AreEqual(first, spawner.LastTouchedGameObject);
+
+            Object.DestroyImmediate(first);
+            Object.DestroyImmediate(second);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
         public void Move_NextToSameShapeAsSelf_ExcludesSelfAsReference()
         {
             // Moving a cube "next to the cube" when the target itself is the only cube registered
