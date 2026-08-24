@@ -300,14 +300,18 @@ namespace ObjectSpawning.Tests
         }
 
         [Test]
-        public void Delete_DestroysTargetAndClearsLastTouchedIfItWasTheTarget()
+        public void Delete_DeactivatesTargetAndClearsLastTouchedIfItWasTheTarget()
         {
+            // Stage 9: Delete no longer destroys immediately -- it deactivates and holds the
+            // object so "undo that" can bring it back (see the Undo_AfterDelete_* test below).
             var (spawnerGO, spawner, target) = SpawnOne();
 
             spawner.Delete(target);
 
             Assert.IsNull(spawner.LastTouchedGameObject);
+            Assert.IsFalse(target.activeSelf);
 
+            Object.DestroyImmediate(target);
             Object.DestroyImmediate(spawnerGO);
         }
 
@@ -532,9 +536,215 @@ namespace ObjectSpawning.Tests
                 spawner.Rotate(null);
                 spawner.Delete(null);
                 spawner.Duplicate(null);
+                spawner.Retexture(null, MaterialNaming.All[0]);
+                spawner.RerollStyle(null);
             });
 
+            Assert.DoesNotThrow(() => spawner.Undo());
+
             Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Undo_WithNothingToUndo_ReturnsFalse()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            Assert.IsFalse(spawner.Undo());
+
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Undo_AfterResize_RestoresPreviousScale()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.transform.localScale;
+
+            spawner.Resize(target, bigger: true);
+            Assert.AreNotEqual(before, target.transform.localScale);
+
+            var undone = spawner.Undo();
+
+            Assert.IsTrue(undone);
+            Assert.AreEqual(before, target.transform.localScale);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterMove_RestoresPreviousPosition()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.transform.position;
+
+            spawner.Move(target, distanceMeters: 2f, direction: MoveDirection.Left);
+            Assert.AreNotEqual(before, target.transform.position);
+
+            spawner.Undo();
+
+            Assert.AreEqual(before, target.transform.position);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterRotate_RestoresPreviousRotation()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.transform.rotation;
+
+            spawner.Rotate(target);
+            Assert.AreNotEqual(before, target.transform.rotation);
+
+            spawner.Undo();
+
+            Assert.AreEqual(before, target.transform.rotation);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterRecolor_RestoresPreviousColor()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.GetComponent<Renderer>().material.color;
+
+            spawner.Recolor(target, Color.blue);
+            Assert.AreEqual(Color.blue, target.GetComponent<Renderer>().material.color);
+
+            spawner.Undo();
+
+            Assert.AreEqual(before, target.GetComponent<Renderer>().material.color);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterRetexture_RestoresPreviousPreset()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.Retexture(target, MaterialNaming.All[0]);
+            // Retexture itself never accesses the getter (it replaces renderer.material outright
+            // via a setter) -- this is the first .material *read* on this renderer, which is what
+            // actually triggers Unity's edit-mode instantiate warning.
+            ExpectMaterialInstantiateWarning();
+            var afterFirst = target.GetComponent<Renderer>().material.GetFloat("_Metallic");
+
+            spawner.Retexture(target, MaterialNaming.All[1]);
+            // Each Retexture call replaces renderer.material outright (a fresh setter assignment),
+            // so every subsequent .material *read* re-triggers the same instantiate warning, not
+            // just the very first one.
+            ExpectMaterialInstantiateWarning();
+            Assert.AreNotEqual(afterFirst, target.GetComponent<Renderer>().material.GetFloat("_Metallic"));
+
+            spawner.Undo();
+
+            ExpectMaterialInstantiateWarning();
+            Assert.AreEqual(afterFirst, target.GetComponent<Renderer>().material.GetFloat("_Metallic"));
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterSpawn_RemovesSpawnedObject()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            ExpectMaterialInstantiateWarning();
+            var target = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, VoiceIntentParser.DefaultScale));
+            Assert.IsNotNull(target);
+
+            var undone = spawner.Undo();
+
+            Assert.IsTrue(undone);
+            Assert.IsTrue(target == null); // Unity's overridden equality -- destroyed objects compare equal to null.
+            Assert.IsNull(spawner.LastTouchedGameObject);
+
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Undo_AfterDuplicate_RemovesTheCopyOnly()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            ExpectMaterialInstantiateWarning();
+            var copy = spawner.Duplicate(target);
+            Assert.IsNotNull(copy);
+
+            spawner.Undo();
+
+            Assert.IsTrue(copy == null);
+            Assert.IsNotNull(target);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Undo_AfterDelete_RestoresAndReactivatesObject()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.Delete(target);
+            Assert.IsFalse(target.activeSelf);
+            Assert.IsNull(spawner.LastTouchedGameObject);
+
+            var undone = spawner.Undo();
+
+            Assert.IsTrue(undone);
+            Assert.IsTrue(target.activeSelf);
+            Assert.AreEqual(target, spawner.LastTouchedGameObject);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ClearAll_ResetsUndoStackAndDestroysHiddenDeletedObjects()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.Delete(target); // hidden, not yet destroyed -- undoable until ClearAll
+            Assert.IsFalse(target.activeSelf);
+
+            spawner.ClearAll();
+
+            Assert.IsTrue(target == null);
+            Assert.IsFalse(spawner.Undo()); // nothing left to undo across a full reset
+
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void RerollStyle_AppliesADifferentCuratedPresetThanCurrent()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.Retexture(target, MaterialNaming.All[0]);
+
+            spawner.RerollStyle(target);
+
+            // First .material *read* on this renderer -- Retexture only ever writes it via a
+            // setter, so this getter access is what triggers Unity's edit-mode instantiate warning.
+            ExpectMaterialInstantiateWarning();
+            var appliedMetallic = target.GetComponent<Renderer>().material.GetFloat("_Metallic");
+            var appliedSmoothness = target.GetComponent<Renderer>().material.GetFloat("_Smoothness");
+            var matchesFirstPreset = Mathf.Approximately(appliedMetallic, MaterialNaming.All[0].Metallic) &&
+                Mathf.Approximately(appliedSmoothness, MaterialNaming.All[0].Smoothness);
+            Assert.IsFalse(matchesFirstPreset, "RerollStyle should not re-pick the preset already applied.");
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
         }
     }
 }

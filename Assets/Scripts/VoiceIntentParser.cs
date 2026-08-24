@@ -109,6 +109,16 @@ namespace ObjectSpawning
         // per-object edit -- "make it brighter" on a pointed-at light still goes through the
         // normal Resize path, which PrimitiveSpawner.Resize reinterprets as intensity for a Light.
         AdjustLighting,
+
+        // Stage 9: reverts the single most recent mutating command (any action below this point
+        // in the enum, or a prior create/generate) -- has no target of its own to resolve, same
+        // early-exit dispatch as ClearAll/AdjustLighting.
+        Undo,
+
+        // Stage 9: "try a different style" -- retexture the current object with a different
+        // curated preset than whatever it's wearing now, WITHOUT the user naming a specific one.
+        // Unlike Retexture, has no Material of its own; PrimitiveSpawner.RerollStyle picks it.
+        RerollStyle,
     }
 
     public readonly struct EditIntent
@@ -315,6 +325,7 @@ namespace ObjectSpawning
             ("turn", EditAction.Rotate),
             ("move", EditAction.Move),
             ("bring", EditAction.Move),
+            ("undo", EditAction.Undo),
         };
 
         // Exposed for TranscriptAutocorrect: the specific words whose exact recognition actually
@@ -343,6 +354,7 @@ namespace ObjectSpawning
                 "meters", "meter", "degrees", "degree", "clockwise", "counterclockwise", "around",
                 "brighter", "brighten", "lighter", "dimmer", "dim", "darker", "darken",
                 "room", "lighting", "ambiance", "ambience", "environment", "scene",
+                "undo", "different", "style", "something", "else", "switch",
             });
             return words.ToArray();
         }
@@ -543,6 +555,41 @@ namespace ObjectSpawning
 
             intent = new EditIntent(EditAction.Retexture, material: best.Value);
             return true;
+        }
+
+        // Stage 9: multi-word phrases, so this doesn't fit ContainsWord's single-keyword scan --
+        // checked as plain substrings instead, same as "next to" above. None of these overlap with
+        // any EditActionKeywords/shape/color/material vocabulary, so calling this before or after
+        // TryParseEditAction in the fallback chain doesn't actually matter; VoiceCommandController
+        // checks it early anyway, alongside TryParseLighting.
+        static readonly string[] RerollStylePhrases =
+        {
+            "different style", "different look", "different material",
+            "try something else", "something else", "switch it up",
+            "change the style", "change the look", "change the material",
+            "another style", "another look",
+        };
+
+        // Stage 9: a vague request to change how the current object looks WITHOUT naming a
+        // specific material -- distinct from TryParseRetexture, which requires a named material
+        // from the curated list. "make it wood" is retexture; "try a different style" is this.
+        public static bool TryParseRerollStyle(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+            foreach (var phrase in RerollStylePhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.RerollStyle);
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         static readonly string[] SceneReferringWords =

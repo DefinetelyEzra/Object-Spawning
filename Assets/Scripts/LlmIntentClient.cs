@@ -30,7 +30,7 @@ namespace ObjectSpawning
         class ParseIntentResponseBody
         {
             public bool recognized;
-            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture | adjust_lighting | undo | reroll_style
             public string shape;       // create only
             public string prompt;      // generate only
             public string color;       // create or recolor
@@ -43,6 +43,11 @@ namespace ObjectSpawning
             public float distance_meters;  // move only, paired with direction -- 0 means unset (JsonUtility has no nullable float, and no one asks to move 0 meters)
             public string direction;       // move only ("left" | "right" | "forward" | "backward" | "up" | "down")
             public float degrees;          // rotate only -- same 0-means-unset reasoning (a 0-degree rotate request isn't a real command)
+
+            // Stage 9: the LLM's own self-assessed confidence -- "low" or absent/anything else
+            // (treated as high). Only meaningful when recognized is true; absence means high,
+            // matching every other backend addition's "degrade gracefully if unset" convention.
+            public string confidence;
         }
 
         // At most one of spawnIntent/editIntent/generateIntent is non-null. All three null means
@@ -51,10 +56,15 @@ namespace ObjectSpawning
         // (error describes what happened). Callers should fall back to the keyword parser for
         // spawn/edit in both null cases (there's no local fallback for generate -- see
         // GenerateIntent), but only the error case is worth surfacing as something went wrong.
-        public void ParseIntent(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string> onComplete) =>
+        //
+        // Stage 9: the trailing bool is true only when an intent WAS parsed but the LLM flagged
+        // its own confidence as low -- callers should hold off executing it and ask the user to
+        // confirm rather than either guessing or silently falling back. Always false alongside a
+        // null intent (there's nothing to be uncertain about).
+        public void ParseIntent(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string, bool> onComplete) =>
             StartCoroutine(ParseIntentRoutine(transcript, onComplete));
 
-        IEnumerator ParseIntentRoutine(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string> onComplete)
+        IEnumerator ParseIntentRoutine(string transcript, Action<SpawnIntent?, EditIntent?, GenerateIntent?, float, string, bool> onComplete)
         {
             var startTime = Time.realtimeSinceStartup;
             var bodyJson = JsonUtility.ToJson(new ParseIntentRequestBody { transcript = transcript });
@@ -74,7 +84,7 @@ namespace ObjectSpawning
             {
                 var error = $"Backend unreachable: {request.error}";
                 Debug.LogWarning($"[LlmIntentClient] Request failed: {request.error}");
-                onComplete?.Invoke(null, null, null, elapsedMs, error);
+                onComplete?.Invoke(null, null, null, elapsedMs, error, false);
                 yield break;
             }
 
@@ -86,23 +96,24 @@ namespace ObjectSpawning
             catch (Exception e)
             {
                 Debug.LogWarning($"[LlmIntentClient] Malformed JSON response: {e.Message}");
-                onComplete?.Invoke(null, null, null, elapsedMs, $"Malformed response: {e.Message}");
+                onComplete?.Invoke(null, null, null, elapsedMs, $"Malformed response: {e.Message}", false);
                 yield break;
             }
 
             if (response == null)
             {
-                onComplete?.Invoke(null, null, null, elapsedMs, "Empty or invalid response from backend.");
+                onComplete?.Invoke(null, null, null, elapsedMs, "Empty or invalid response from backend.", false);
                 yield break;
             }
 
             if (!response.recognized)
             {
                 // Legitimate: the LLM ran fine and correctly found no command here.
-                onComplete?.Invoke(null, null, null, elapsedMs, null);
+                onComplete?.Invoke(null, null, null, elapsedMs, null, false);
                 yield break;
             }
 
+            var lowConfidence = string.Equals(response.confidence, "low", StringComparison.OrdinalIgnoreCase);
             var action = InferAction(response);
 
             if (action == "create")
@@ -111,7 +122,7 @@ namespace ObjectSpawning
                 {
                     var error = $"Backend returned invalid shape: '{response.shape}'";
                     Debug.LogWarning($"[LlmIntentClient] {error}");
-                    onComplete?.Invoke(null, null, null, elapsedMs, error);
+                    onComplete?.Invoke(null, null, null, elapsedMs, error, false);
                     yield break;
                 }
 
@@ -123,7 +134,7 @@ namespace ObjectSpawning
                 if (relation.HasValue && TryParseShape(response.reference_shape, out var refShape))
                     referenceShape = refShape;
 
-                onComplete?.Invoke(new SpawnIntent(shape, color, scale, relation, referenceShape), null, null, elapsedMs, null);
+                onComplete?.Invoke(new SpawnIntent(shape, color, scale, relation, referenceShape), null, null, elapsedMs, null, lowConfidence);
                 yield break;
             }
 
@@ -133,23 +144,23 @@ namespace ObjectSpawning
                 {
                     var error = "Backend returned action=generate with no prompt.";
                     Debug.LogWarning($"[LlmIntentClient] {error}");
-                    onComplete?.Invoke(null, null, null, elapsedMs, error);
+                    onComplete?.Invoke(null, null, null, elapsedMs, error, false);
                     yield break;
                 }
 
-                onComplete?.Invoke(null, null, new GenerateIntent(response.prompt.Trim()), elapsedMs, null);
+                onComplete?.Invoke(null, null, new GenerateIntent(response.prompt.Trim()), elapsedMs, null, lowConfidence);
                 yield break;
             }
 
             if (TryParseEditAction(action, response, out var editIntent))
             {
-                onComplete?.Invoke(null, editIntent, null, elapsedMs, null);
+                onComplete?.Invoke(null, editIntent, null, elapsedMs, null, lowConfidence);
                 yield break;
             }
 
             var invalidActionError = $"Backend returned invalid action: '{response.action}'";
             Debug.LogWarning($"[LlmIntentClient] {invalidActionError}");
-            onComplete?.Invoke(null, null, null, elapsedMs, invalidActionError);
+            onComplete?.Invoke(null, null, null, elapsedMs, invalidActionError, false);
         }
 
         // The LLM occasionally omits `action` even when it isn't a create command -- observed
@@ -274,6 +285,12 @@ namespace ObjectSpawning
 
                     intent = new EditIntent(EditAction.AdjustLighting,
                         color: lightColor, lightBrighter: lightBrighter, resizeMultiplier: lightMultiplier);
+                    return true;
+                case "undo":
+                    intent = new EditIntent(EditAction.Undo);
+                    return true;
+                case "reroll_style":
+                    intent = new EditIntent(EditAction.RerollStyle);
                     return true;
                 default:
                     intent = default;

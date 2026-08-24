@@ -159,6 +159,15 @@ CASES = [
     # per-object resize, never adjust_lighting.
     ("make it brighter", "resize", None, None, None, "bigger", None, None, False, None),
     ("dim it", "resize", None, None, None, "smaller", None, None, False, None),
+    # Stage 9: undo -- no other fields.
+    ("undo that", "undo", None, None, None, None, None, None, False, None),
+    ("undo", "undo", None, None, None, None, None, None, False, None),
+    ("undo the last thing", "undo", None, None, None, None, None, None, False, None),
+    # Stage 9: reroll_style -- a vague "different style" ask with no material named, distinct
+    # from retexture above (which requires a specific material).
+    ("try a different style", "reroll_style", None, None, None, None, None, None, False, None),
+    ("try something else", "reroll_style", None, None, None, None, None, None, False, None),
+    ("give it a different look", "reroll_style", None, None, None, None, None, None, False, None),
 ]
 
 

@@ -75,7 +75,13 @@ namespace ObjectSpawning
             if (voiceCommandController != null)
                 text += voiceCommandController.IsMicListening ? "\nListening..." : "\nHold left trigger to talk";
 
-            text += "\n\nSay \"clear the room\" to reset";
+            // Stage 9: a low-confidence guess is waiting on a yes/no -- surfaced here instead of
+            // the usual reset hint so a guest can see what the app thinks it heard and confirm or
+            // just say the command again.
+            if (voiceCommandController != null && !string.IsNullOrEmpty(voiceCommandController.PendingConfirmationText))
+                text += $"\n\n{voiceCommandController.PendingConfirmationText}";
+            else
+                text += "\n\nSay \"clear the room\" to reset";
 
             label.text = text;
         }

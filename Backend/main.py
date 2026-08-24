@@ -31,6 +31,13 @@ since "how much brighter/dimmer" and "what tint" are the same shape of question 
 recolor already answer. There used to also be a purely decorative "lamp" shape distinct from
 "light", but headset testing showed the LLM reliably conflated the two regardless of prompt
 wording, so lamp was removed rather than chasing an unreliable disambiguation.
+
+Stage 9 adds two more no-extra-field actions -- undo (reverts the client's own most recent
+change; the client keeps the actual undo stack, this endpoint just needs to recognize the
+phrase) and reroll_style (a vague "try a different style" with no material named, distinct
+from retexture) -- plus an optional confidence field the model sets to "low" when it's
+genuinely unsure which action or field applies. The Unity client holds a low-confidence
+result for a spoken yes/no instead of executing it outright.
 """
 import logging
 import os
@@ -85,7 +92,7 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             "action": types.Schema(
                 type="STRING",
                 enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
-                      "delete", "clear", "retexture", "adjust_lighting"],
+                      "delete", "clear", "retexture", "adjust_lighting", "undo", "reroll_style"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
@@ -106,7 +113,15 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "the user is currently pointing at, or the last one they created or "
                              "touched if they aren't pointing at anything -- do NOT try to figure "
                              "out which object from the transcript's wording, that's resolved "
-                             "elsewhere. Default to 'create' if omitted.",
+                             "elsewhere. 'undo' reverts the single most recent change (any create, "
+                             "generate, or edit) -- takes no other fields; use for 'undo that', "
+                             "'undo', 'undo the last thing', 'go back'. 'reroll_style' asks for a "
+                             "DIFFERENT material/look on the current object WITHOUT the user naming "
+                             "a specific one ('try a different style', 'try something else', "
+                             "'switch it up', 'give it a different look') -- takes no other fields. "
+                             "If a specific material IS named, that's action=retexture with "
+                             "material set instead, never reroll_style. Default to 'create' if "
+                             "omitted.",
             ),
             "shape": types.Schema(
                 type="STRING",
@@ -271,6 +286,17 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "plain 'rotate it'/'turn it' with no amount given -- the client "
                              "applies its own default single-press rotation in that case.",
             ),
+            "confidence": types.Schema(
+                type="STRING",
+                enum=["high", "low"],
+                description="Your own confidence that 'action' (and any fields set alongside it) "
+                             "is actually what the user meant. Set 'low' ONLY when the transcript "
+                             "is genuinely ambiguous -- it could plausibly mean two different "
+                             "commands, or you're guessing at a required field rather than reading "
+                             "it off the transcript. Most commands are clear; omit this field or "
+                             "set 'high' for those. Never set 'low' just because a command is short "
+                             "or casually phrased ('bigger' alone is still high confidence resize).",
+            ),
         },
         required=["recognized"],
     ),
@@ -337,8 +363,18 @@ SYSTEM_PROMPT = (
     "that object happens to be a spawned light itself, which is resolved client-side, not by you). "
     "Set only the fields the phrase actually asks for -- 'make the lighting feel warm' should set "
     "color alone and leave size_delta unset, not invent a brightness change that wasn't requested.\n"
-    "If the transcript doesn't describe either a create, generate, edit, clear, retexture, or "
-    "adjust_lighting command, set recognized to false and omit the other fields."
+    "For 'undo that', 'undo', 'undo the last thing', 'go back' (reverting the single most recent "
+    "change), set action=undo and no other fields.\n"
+    "For a vague request to change how the current object looks WITHOUT naming a specific material "
+    "('try a different style', 'try something else', 'switch it up', 'give it a different look'), "
+    "set action=reroll_style and no other fields -- distinct from retexture, which requires a "
+    "specific named material from the material field's own list.\n"
+    "Also set confidence='low' whenever the transcript is genuinely ambiguous about WHICH action or "
+    "a required field applies, rather than guessing silently -- leave it unset (high) for the "
+    "large majority of ordinary, clear commands.\n"
+    "If the transcript doesn't describe either a create, generate, edit, clear, retexture, "
+    "adjust_lighting, undo, or reroll_style command, set recognized to false and omit the other "
+    "fields."
 )
 
 

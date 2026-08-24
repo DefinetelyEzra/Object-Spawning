@@ -52,6 +52,71 @@ namespace ObjectSpawning
         readonly Dictionary<int, GameObject> registry = new();
         int nextId;
 
+        // Stage 9: what color/material an object currently wears, keyed by its registry id --
+        // lets Recolor and Retexture undo each other correctly (reapplying a preset via
+        // ApplyVisualState, not just a flat color) and lets RerollStyle know what to avoid
+        // re-picking. Cleared alongside the registry on ClearAll.
+        readonly struct VisualState
+        {
+            public readonly Color Color;
+            public readonly MaterialPreset? Preset;
+            public VisualState(Color color, MaterialPreset? preset)
+            {
+                Color = color;
+                Preset = preset;
+            }
+        }
+        readonly Dictionary<int, VisualState> visualState = new();
+
+        // Stage 9: "undo that" -- a capped stack of inverse actions, one per mutating verb call.
+        // Capped rather than unbounded so a long exhibition session (many small edits) can't grow
+        // this forever; the cap also directly bounds how many Delete-hidden objects (see below)
+        // can be waiting around at once. Revert closures never push their own new undo entry --
+        // undoing an undo (redo) isn't part of this roadmap stage, so there's no risk of the stack
+        // fighting itself.
+        class UndoEntry
+        {
+            public string Description;
+            public System.Action Revert;
+            public System.Action OnEvicted;
+        }
+        readonly LinkedList<UndoEntry> undoStack = new();
+        const int MaxUndoEntries = 8;
+
+        // Stage 9: Delete no longer destroys immediately -- it deactivates and holds the object so
+        // "undo that" can bring it back, same as every other edit. The object is only ever
+        // permanently destroyed once its undo entry is evicted from the capped stack above (it can
+        // no longer be reached) or the whole room is cleared -- never left to leak indefinitely.
+        readonly HashSet<GameObject> hiddenForUndo = new();
+
+        void PushUndo(string description, System.Action revert, System.Action onEvicted = null)
+        {
+            undoStack.AddLast(new UndoEntry { Description = description, Revert = revert, OnEvicted = onEvicted });
+            if (undoStack.Count > MaxUndoEntries)
+            {
+                var evicted = undoStack.First.Value;
+                undoStack.RemoveFirst();
+                evicted.OnEvicted?.Invoke();
+            }
+        }
+
+        // Reverts the single most recent mutating command, if any. Returns whether there was
+        // anything to undo, so callers (voice/HUD) can tell a real revert apart from a no-op.
+        public bool Undo()
+        {
+            if (undoStack.Count == 0)
+            {
+                Debug.Log("[PrimitiveSpawner] Nothing to undo.");
+                return false;
+            }
+
+            var entry = undoStack.Last.Value;
+            undoStack.RemoveLast();
+            entry.Revert();
+            Debug.Log($"[PrimitiveSpawner] Undid: {entry.Description}.");
+            return true;
+        }
+
         public int SpawnCount { get; private set; }
         public Vector3 LastSpawnPosition { get; private set; }
 
@@ -132,7 +197,8 @@ namespace ObjectSpawning
             go.transform.SetPositionAndRotation(position, Quaternion.identity);
 
             ApplyColor(go, intent.Color);
-            Register(go, intent.Shape);
+            var id = Register(go, intent.Shape);
+            visualState[id] = new VisualState(intent.Color, null);
 
             SpawnCount++;
             LastSpawnPosition = position;
@@ -140,6 +206,7 @@ namespace ObjectSpawning
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Spawned {intent.Shape} #{SpawnCount} at {position}");
             StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
             return go;
         }
 
@@ -157,7 +224,8 @@ namespace ObjectSpawning
             go.transform.SetPositionAndRotation(position, Quaternion.identity);
 
             ApplyColor(go, GeneratingPlaceholderColor);
-            Register(go, PrimitiveShape.Generated);
+            var id = Register(go, PrimitiveShape.Generated);
+            visualState[id] = new VisualState(GeneratingPlaceholderColor, null);
 
             SpawnCount++;
             LastSpawnPosition = position;
@@ -165,6 +233,7 @@ namespace ObjectSpawning
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Generating placeholder spawned for prompt=\"{prompt}\".");
             StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
 
             if (meshGenerationClient != null)
             {
@@ -308,12 +377,36 @@ namespace ObjectSpawning
                 t.localScale = targetScale;
         }
 
-        void Register(GameObject go, PrimitiveShape shape)
+        int Register(GameObject go, PrimitiveShape shape)
         {
             var info = go.AddComponent<SpawnedObjectInfo>();
             info.Id = nextId++;
             info.Shape = shape;
             registry[info.Id] = go;
+            return info.Id;
+        }
+
+        // Reverts a Spawn/Duplicate: unlike public Delete, this permanently destroys the object
+        // right away rather than hiding it for further undo -- undoing an undo (redo) isn't part
+        // of this stage, so there's nothing left that would ever need it back.
+        void DestroyRegistered(GameObject go)
+        {
+            if (go == null)
+                return;
+
+            var info = go.GetComponent<SpawnedObjectInfo>();
+            if (info != null)
+            {
+                registry.Remove(info.Id);
+                visualState.Remove(info.Id);
+            }
+
+            if (go == LastTouchedGameObject)
+                LastTouchedGameObject = FindMostRecentlySpawned();
+            objectSelector?.ClearSelection();
+
+            Debug.Log($"[PrimitiveSpawner] Undo removed {go.name}.");
+            DestroyObject(go);
         }
 
         // Stage 8: a small visible bulb (so it can actually be seen and pointed at -- an
@@ -499,11 +592,28 @@ namespace ObjectSpawning
 
             if (target.TryGetComponent<Light>(out var light))
             {
+                var prevIntensity = light.intensity;
+                var prevRange = light.range;
+                PushUndo($"resize {target.name}", () =>
+                {
+                    if (light == null)
+                        return;
+                    light.intensity = prevIntensity;
+                    light.range = prevRange;
+                });
+
                 light.intensity = Mathf.Clamp(light.intensity * factor, 0.05f, 12f);
                 light.range = Mathf.Clamp(light.range * factor, 0.3f, 15f);
             }
             else
             {
+                var prevScale = target.transform.localScale;
+                PushUndo($"resize {target.name}", () =>
+                {
+                    if (target != null)
+                        target.transform.localScale = prevScale;
+                });
+
                 target.transform.localScale *= factor;
             }
 
@@ -517,9 +627,40 @@ namespace ObjectSpawning
             if (target == null)
                 return;
 
+            var prevState = PriorVisualState(target);
+            PushUndo($"recolor {target.name}", () => ApplyVisualState(target, prevState));
+            ApplyRecolorCore(target, color);
+        }
+
+        void ApplyRecolorCore(GameObject target, Color color)
+        {
             ApplyColor(target, color);
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            if (info != null)
+                visualState[info.Id] = new VisualState(color, null);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Recolored {target.name}.");
+        }
+
+        VisualState PriorVisualState(GameObject target)
+        {
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            return info != null && visualState.TryGetValue(info.Id, out var vs) ? vs : new VisualState(Color.white, null);
+        }
+
+        // Stage 9: shared revert target for both Recolor's and Retexture's undo entries -- a prior
+        // state that was a flat color reapplies via Recolor's own logic, one that was a curated
+        // preset reapplies via Retexture's, so undoing either one always lands back on whichever
+        // it actually was before, not just a flat color guess.
+        void ApplyVisualState(GameObject target, VisualState state)
+        {
+            if (target == null)
+                return;
+
+            if (state.Preset.HasValue)
+                ApplyRetextureCore(target, state.Preset.Value);
+            else
+                ApplyRecolorCore(target, state.Color);
         }
 
         // Stage 7: applies a curated PBR preset (base color + metallic + smoothness, plus an
@@ -534,6 +675,42 @@ namespace ObjectSpawning
             if (target == null)
                 return;
 
+            var prevState = PriorVisualState(target);
+            PushUndo($"retexture {target.name}", () => ApplyVisualState(target, prevState));
+            ApplyRetextureCore(target, preset);
+        }
+
+        // Stage 9: picks a different curated preset than whatever the target currently wears
+        // (falls back to any preset if it isn't currently retextured at all) and applies it through
+        // the normal Retexture path above, so it's undoable exactly like a spoken retexture command
+        // would be -- "try a different style" is just a retexture whose material Unity picks
+        // instead of the user naming one.
+        public void RerollStyle(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            var current = PriorVisualState(target).Preset;
+            var candidates = MaterialNaming.All;
+            if (candidates.Count == 0)
+                return;
+
+            var next = candidates[Random.Range(0, candidates.Count)];
+            if (candidates.Count > 1 && current.HasValue)
+            {
+                var attempts = 0;
+                while (next.Name == current.Value.Name && attempts < 10)
+                {
+                    next = candidates[Random.Range(0, candidates.Count)];
+                    attempts++;
+                }
+            }
+
+            Retexture(target, next);
+        }
+
+        void ApplyRetextureCore(GameObject target, MaterialPreset preset)
+        {
             // Some presets (wood, marble, stone, ...) get a small procedurally-generated detail
             // texture on top of the flat PBR parameters -- see ProceduralTextureFactory for which
             // ones and why. Generated once per material name, not per call.
@@ -564,6 +741,9 @@ namespace ObjectSpawning
                 renderer.material = instance;
             }
 
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            if (info != null)
+                visualState[info.Id] = new VisualState(preset.BaseColor, preset);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Retextured {target.name} as {preset.Name}.");
         }
@@ -597,6 +777,13 @@ namespace ObjectSpawning
         {
             if (target == null)
                 return;
+
+            var prevPosition = target.transform.position;
+            PushUndo($"move {target.name}", () =>
+            {
+                if (target != null)
+                    target.transform.position = prevPosition;
+            });
 
             if (distanceMeters.HasValue && direction.HasValue)
             {
@@ -673,6 +860,13 @@ namespace ObjectSpawning
             if (target == null)
                 return;
 
+            var prevRotation = target.transform.rotation;
+            PushUndo($"rotate {target.name}", () =>
+            {
+                if (target != null)
+                    target.transform.rotation = prevRotation;
+            });
+
             target.transform.Rotate(Vector3.up, degrees, Space.World);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Rotated {target.name} by {degrees:0.##} degrees.");
@@ -690,6 +884,7 @@ namespace ObjectSpawning
             var sourceRenderer = target.GetComponentInChildren<Renderer>();
             var color = sourceRenderer != null ? sourceRenderer.material.color : Color.white;
             var shape = target.GetComponent<SpawnedObjectInfo>()?.Shape ?? PrimitiveShape.Cube;
+            var sourceVisual = PriorVisualState(target);
 
             var copy = Instantiate(target, GetSpawnPosition(), target.transform.rotation);
             copy.name = $"{target.name}_Copy";
@@ -697,21 +892,28 @@ namespace ObjectSpawning
             var oldInfo = copy.GetComponent<SpawnedObjectInfo>();
             if (oldInfo != null)
                 DestroyObject(oldInfo);
-            Register(copy, shape);
+            var copyId = Register(copy, shape);
+            visualState[copyId] = sourceVisual;
             ApplyColor(copy, color);
 
             SpawnCount++;
             LastTouchedGameObject = copy;
             Debug.Log($"[PrimitiveSpawner] Duplicated {target.name} -> {copy.name}.");
+            PushUndo($"duplicate {target.name}", () => DestroyRegistered(copy));
             return copy;
         }
 
+        // Stage 9: hides rather than destroys, so "undo that" can bring it straight back --
+        // permanently destroyed only once its undo entry is evicted (see PushUndo) or the whole
+        // room is cleared. A hidden object costs nothing in the meantime; Unity doesn't render or
+        // simulate an inactive GameObject.
         public void Delete(GameObject target)
         {
             if (target == null)
                 return;
 
             var info = target.GetComponent<SpawnedObjectInfo>();
+            var id = info != null ? info.Id : -1;
             if (info != null)
                 registry.Remove(info.Id);
 
@@ -726,7 +928,28 @@ namespace ObjectSpawning
             objectSelector?.ClearSelection();
 
             Debug.Log($"[PrimitiveSpawner] Deleted {target.name}.");
-            DestroyObject(target);
+            target.SetActive(false);
+            hiddenForUndo.Add(target);
+
+            PushUndo($"delete {target.name}",
+                revert: () =>
+                {
+                    if (target == null)
+                        return;
+                    hiddenForUndo.Remove(target);
+                    target.SetActive(true);
+                    if (info != null)
+                        registry[id] = target;
+                    LastTouchedGameObject = target;
+                    objectSelector?.ClearSelection();
+                    Debug.Log($"[PrimitiveSpawner] Restored {target.name}.");
+                },
+                onEvicted: () =>
+                {
+                    hiddenForUndo.Remove(target);
+                    if (target != null)
+                        DestroyObject(target);
+                });
         }
 
         // Highest registry id still present (registry is keyed by nextId, which only ever
@@ -763,6 +986,19 @@ namespace ObjectSpawning
             }
 
             registry.Clear();
+
+            // Also permanently destroys anything Delete was only hiding for possible undo, and
+            // drops the undo stack itself -- reverting to a state from before a full room reset
+            // wouldn't mean anything.
+            foreach (var hidden in hiddenForUndo)
+            {
+                if (hidden != null)
+                    DestroyObject(hidden);
+            }
+            hiddenForUndo.Clear();
+            undoStack.Clear();
+            visualState.Clear();
+
             LastTouchedGameObject = null;
             SpawnCount = 0;
             LastGenerationError = "";
@@ -840,6 +1076,17 @@ namespace ObjectSpawning
                 Debug.LogWarning("[PrimitiveSpawner] No directional light wired -- cannot adjust scene lighting.");
                 return;
             }
+
+            var light = directionalLight;
+            var prevIntensity = light.intensity;
+            var prevColor = light.color;
+            PushUndo("adjust scene lighting", () =>
+            {
+                if (light == null)
+                    return;
+                light.intensity = prevIntensity;
+                light.color = prevColor;
+            });
 
             if (brighter.HasValue)
             {

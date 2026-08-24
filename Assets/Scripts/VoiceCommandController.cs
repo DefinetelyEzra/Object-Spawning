@@ -29,6 +29,19 @@ namespace ObjectSpawning
         public float LastLlmLatencyMs { get; private set; }
         public float LastTotalLatencyMs { get; private set; }
 
+        // Stage 9: set whenever the LLM parsed a command but flagged low confidence in it -- the
+        // command is held here rather than executed immediately, and GuestHud/DebugHud surface
+        // this text so the player can see what was guessed. Empty string means nothing pending.
+        public string PendingConfirmationText { get; private set; } = "";
+
+        static readonly string[] AffirmativeWords = { "yes", "yeah", "yep", "yup", "correct", "confirm", "right" };
+
+        SpawnIntent? pendingSpawnIntent;
+        EditIntent? pendingEditIntent;
+        GenerateIntent? pendingGenerateIntent;
+
+        bool HasPendingConfirmation => pendingSpawnIntent.HasValue || pendingEditIntent.HasValue || pendingGenerateIntent.HasValue;
+
         void Awake()
         {
             pushToTalkAction = new InputAction(name: "PushToTalk", type: InputActionType.Button);
@@ -133,16 +146,48 @@ namespace ObjectSpawning
             else
                 Debug.Log($"[VoiceCommandController] Transcript: \"{transcript}\" (STT: {LastSttLatencyMs:0}ms)");
 
+            // Stage 9: a low-confidence guess from last turn is waiting on a yes/no, and this
+            // transcript IS that answer -- resolve it here, before sending anything to the LLM
+            // (an affirmative like "yes" alone would just come back unrecognized anyway, wasting a
+            // round trip, and risks the LLM guessing something unrelated from it). Anything other
+            // than a clear "yes" discards the pending guess and falls through to treat this
+            // transcript as a brand new command, rather than demanding an exact "no".
+            if (HasPendingConfirmation)
+            {
+                var lower = transcript.ToLowerInvariant();
+                var confirmed = System.Array.Exists(AffirmativeWords, w => ContainsWord(lower, w));
+                if (confirmed)
+                {
+                    Debug.Log($"[VoiceCommandController] Confirmed pending action: {PendingConfirmationText}");
+                    ApplyPendingIntent();
+                    ClearPending();
+                    return;
+                }
+
+                Debug.Log("[VoiceCommandController] Pending confirmation not confirmed -- discarding it.");
+                ClearPending();
+            }
+
             if (spawner == null)
                 return;
 
             if (llmClient != null)
             {
-                llmClient.ParseIntent(transcript, (spawnIntent, editIntent, generateIntent, llmLatencyMs, llmError) =>
+                llmClient.ParseIntent(transcript, (spawnIntent, editIntent, generateIntent, llmLatencyMs, llmError, lowConfidence) =>
                 {
                     LastLlmLatencyMs = llmLatencyMs;
                     LastTotalLatencyMs = LastSttLatencyMs + llmLatencyMs;
                     LastLlmError = llmError ?? "";
+
+                    if (lowConfidence && (spawnIntent.HasValue || editIntent.HasValue || generateIntent.HasValue))
+                    {
+                        pendingSpawnIntent = spawnIntent;
+                        pendingEditIntent = editIntent;
+                        pendingGenerateIntent = generateIntent;
+                        PendingConfirmationText = $"Did you mean: {DescribeIntent(spawnIntent, editIntent, generateIntent)}? Say \"yes\" to confirm.";
+                        Debug.Log($"[VoiceCommandController] Low-confidence intent ({llmLatencyMs:0}ms) -- awaiting confirmation: {PendingConfirmationText}");
+                        return;
+                    }
 
                     if (spawnIntent.HasValue)
                     {
@@ -182,6 +227,50 @@ namespace ObjectSpawning
             }
         }
 
+        void ApplyPendingIntent()
+        {
+            if (pendingSpawnIntent.HasValue)
+                spawner.Spawn(pendingSpawnIntent.Value);
+            else if (pendingEditIntent.HasValue)
+                ApplyEdit(pendingEditIntent.Value);
+            else if (pendingGenerateIntent.HasValue)
+                spawner.SpawnGenerating(pendingGenerateIntent.Value.Prompt);
+        }
+
+        void ClearPending()
+        {
+            pendingSpawnIntent = null;
+            pendingEditIntent = null;
+            pendingGenerateIntent = null;
+            PendingConfirmationText = "";
+        }
+
+        static string DescribeIntent(SpawnIntent? spawn, EditIntent? edit, GenerateIntent? generate)
+        {
+            if (spawn.HasValue)
+                return $"spawn a {spawn.Value.Shape}";
+            if (generate.HasValue)
+                return $"generate \"{generate.Value.Prompt}\"";
+            if (edit.HasValue)
+                return $"{edit.Value.Action} the current object";
+            return "that";
+        }
+
+        static bool ContainsWord(string text, string word)
+        {
+            var index = text.IndexOf(word, System.StringComparison.Ordinal);
+            while (index >= 0)
+            {
+                var leftOk = index == 0 || !char.IsLetter(text[index - 1]);
+                var rightIndex = index + word.Length;
+                var rightOk = rightIndex >= text.Length || !char.IsLetter(text[rightIndex]);
+                if (leftOk && rightOk)
+                    return true;
+                index = text.IndexOf(word, index + 1, System.StringComparison.Ordinal);
+            }
+            return false;
+        }
+
         void TryLocalFallback(string transcript)
         {
             // Checked first, ahead of everything else: it only ever matches when an explicit
@@ -192,6 +281,16 @@ namespace ObjectSpawning
             if (VoiceIntentParser.TryParseLighting(transcript, out var lightingIntent))
             {
                 ApplyEdit(lightingIntent);
+                return;
+            }
+
+            // Stage 9: same reasoning as the lighting check above -- "try a different style" has
+            // its own unambiguous phrase vocabulary that never overlaps with a plain edit verb, so
+            // it needs to be checked before the generic edit-action pass could ever get a chance
+            // to miss it.
+            if (VoiceIntentParser.TryParseRerollStyle(transcript, out var rerollIntent))
+            {
+                ApplyEdit(rerollIntent);
                 return;
             }
 
@@ -244,6 +343,15 @@ namespace ObjectSpawning
                 return;
             }
 
+            // Stage 9: same "no single object" shape as ClearAll/AdjustLighting -- reverts
+            // whatever the most recent mutating command was, regardless of what's currently
+            // pointed at or last touched.
+            if (intent.Action == EditAction.Undo)
+            {
+                spawner.Undo();
+                return;
+            }
+
             var target = objectSelector != null ? objectSelector.GetPointedAtObject() : null;
             if (target == null)
                 target = spawner.LastTouchedGameObject;
@@ -269,6 +377,7 @@ namespace ObjectSpawning
                     if (intent.Material.HasValue)
                         spawner.Retexture(target, intent.Material.Value);
                     break;
+                case EditAction.RerollStyle: spawner.RerollStyle(target); break;
             }
         }
     }

@@ -89,6 +89,9 @@ namespace ObjectSpawning
 
                 if (!string.IsNullOrEmpty(voiceCommandController.LastError))
                     text += $"\nERROR: {Truncate(voiceCommandController.LastError)}";
+
+                if (!string.IsNullOrEmpty(voiceCommandController.PendingConfirmationText))
+                    text += $"\nPENDING: {Truncate(voiceCommandController.PendingConfirmationText)}";
             }
 
             label.text = text;
