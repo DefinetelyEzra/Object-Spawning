@@ -15,12 +15,22 @@ namespace ObjectSpawning
         public readonly float Metallic;
         public readonly float Smoothness;
 
-        public MaterialPreset(string name, Color baseColor, float metallic, float smoothness)
+        // Stage 9.1: true only for "glass" so far. URP's alpha-blend rendering path is gated
+        // behind a shader keyword/render-queue combination that has to already be baked into a
+        // real persisted material ASSET for the build-time shader stripper to keep that variant
+        // (an ad-hoc runtime-only material is invisible to it -- the exact same reasoning
+        // PrimitiveSpawner's own baseMaterial field exists for, see its comment) -- so a
+        // transparent preset needs PrimitiveSpawner to instantiate from its dedicated
+        // glassMaterial asset instead of the normal opaque baseMaterial.
+        public readonly bool IsTransparent;
+
+        public MaterialPreset(string name, Color baseColor, float metallic, float smoothness, bool isTransparent = false)
         {
             Name = name;
             BaseColor = baseColor;
             Metallic = metallic;
             Smoothness = smoothness;
+            IsTransparent = isTransparent;
         }
     }
 
@@ -43,6 +53,10 @@ namespace ObjectSpawning
             new("rubber", new Color(0.08f, 0.08f, 0.08f), metallic: 0f, smoothness: 0.05f),
             new("fabric", new Color(0.5f, 0.5f, 0.6f), metallic: 0f, smoothness: 0.1f),
             new("leather", new Color(0.25f, 0.15f, 0.08f), metallic: 0f, smoothness: 0.4f),
+            // Pale, faintly cyan-tinted, and mostly see-through (low alpha) -- a dielectric
+            // (non-metallic), near-mirror-smooth surface is what actually reads as glass, not a
+            // solid color at all.
+            new("glass", new Color(0.85f, 0.95f, 1f, 0.28f), metallic: 0f, smoothness: 0.95f, isTransparent: true),
         };
 
         public static IReadOnlyList<MaterialPreset> All => Materials;

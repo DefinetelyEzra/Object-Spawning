@@ -42,6 +42,14 @@ namespace ObjectSpawning
         // optional, same "degrade gracefully if unwired" convention as meshGenerationClient.
         [SerializeField] Light directionalLight;
 
+        // Stage 9.1: a real persisted asset pre-configured as URP Transparent (see
+        // MaterialPreset.IsTransparent's own comment for why this can't just be a runtime keyword
+        // toggle) -- Retexture instantiates from this instead of baseMaterial whenever the target
+        // preset is transparent. Optional, same degrade-gracefully convention as every other
+        // wireable field here: if unwired, a transparent preset just falls back to the normal
+        // opaque instantiation path and looks solid instead of glassy, rather than throwing.
+        [SerializeField] Material glassMaterial;
+
         const int MaxPointLights = 4;
         const float MinAmbientIntensity = 0.05f;
         const float MaxAmbientIntensity = 3f;
@@ -718,7 +726,8 @@ namespace ObjectSpawning
 
             foreach (var renderer in target.GetComponentsInChildren<Renderer>())
             {
-                var instance = baseMaterial != null ? Instantiate(baseMaterial) : new Material(renderer.sharedMaterial);
+                var instance = preset.IsTransparent && glassMaterial != null ? Instantiate(glassMaterial)
+                    : baseMaterial != null ? Instantiate(baseMaterial) : new Material(renderer.sharedMaterial);
                 if (instance.HasProperty("_Metallic"))
                     instance.SetFloat("_Metallic", preset.Metallic);
                 if (instance.HasProperty("_Smoothness"))

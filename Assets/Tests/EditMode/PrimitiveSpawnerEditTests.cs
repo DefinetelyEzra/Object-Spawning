@@ -746,5 +746,27 @@ namespace ObjectSpawning.Tests
             Object.DestroyImmediate(target);
             Object.DestroyImmediate(spawnerGO);
         }
+
+        [Test]
+        public void Retexture_Glass_AppliesLowMetallicHighSmoothnessTranslucentColor()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            Assert.IsTrue(MaterialNaming.TryGetMaterial("glass", out var glassPreset));
+            Assert.IsTrue(glassPreset.IsTransparent);
+
+            spawner.Retexture(target, glassPreset);
+
+            // First .material *read* on this renderer since Retexture's own setter reassignment
+            // -- see the RerollStyle test above for why this needs its own fresh expectation.
+            ExpectMaterialInstantiateWarning();
+            var material = target.GetComponent<Renderer>().material;
+            Assert.AreEqual(0f, material.GetFloat("_Metallic"), 0.001f);
+            Assert.AreEqual(0.95f, material.GetFloat("_Smoothness"), 0.001f);
+            Assert.Less(material.color.a, 1f, "Glass should be applied with a translucent (< 1) alpha.");
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
     }
 }

@@ -32,6 +32,9 @@ recolor already answer. There used to also be a purely decorative "lamp" shape d
 "light", but headset testing showed the LLM reliably conflated the two regardless of prompt
 wording, so lamp was removed rather than chasing an unreliable disambiguation.
 
+Stage 9.1 adds "glass" to retexture's curated material list -- same shape as every other
+preset (the LLM only names it, Unity owns the actual transparent-material instancing).
+
 Stage 9 adds two more no-extra-field actions -- undo (reverts the client's own most recent
 change; the client keeps the actual undo stack, this endpoint just needs to recognize the
 phrase) and reroll_style (a vague "try a different style" with no material named, distinct
@@ -171,14 +174,15 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             "material": types.Schema(
                 type="STRING",
                 enum=["wood", "metal", "rusted_metal", "gold", "chrome", "stone", "concrete",
-                      "marble", "brick", "plastic", "rubber", "fabric", "leather"],
+                      "marble", "brick", "plastic", "rubber", "fabric", "leather", "glass"],
                 description="Only for action=retexture. The closest matching surface material "
                              "from this curated list, even if the user's wording differs -- "
                              "'wooden'/'oak'/'timber'->wood, 'steel'/'metallic'/'iron'->metal, "
                              "'rusty'/'rusted'/'corroded'->rusted_metal, 'golden'->gold, "
                              "'silver'/'mirror'/'polished silver'/'chrome-plated'->chrome, "
                              "'rock'/'granite'->stone, 'cement'->concrete, 'cloth'/'canvas'/"
-                             "'textile'->fabric. This takes priority over the color field whenever "
+                             "'textile'->fabric, 'clear'/'transparent'/'see-through'/'glassy'-> "
+                             "glass. This takes priority over the color field whenever "
                              "a word could be read as either -- 'gold'/'silver'/'wood'/'wooden' name "
                              "a material first, a color only as an afterthought. If the request "
                              "doesn't reasonably match any of these (a genuinely different material, "

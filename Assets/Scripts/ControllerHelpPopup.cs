@@ -86,7 +86,7 @@ namespace ObjectSpawning
                 "  \"move it 3 meters to the left\"\n" +
                 "  \"rotate it 180 degrees\"\n" +
                 "  \"move it onto the table\"\n" +
-                "  \"make it look like rusted metal\"\n" +
+                "  \"make it look like rusted metal\" / \"make it glass\"\n" +
                 "  \"spawn a light\" / \"make the room brighter\"\n" +
                 "  \"try a different style\" / \"undo that\"\n" +
                 "  \"delete it\" / \"clear the room\"";

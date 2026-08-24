@@ -91,6 +91,7 @@ namespace ObjectSpawning.EditorTools
             spawnerSerialized.FindProperty("baseMaterial").objectReferenceValue = GetOrCreateBaseMaterial();
             spawnerSerialized.FindProperty("floorReference").objectReferenceValue = floor.transform;
             spawnerSerialized.FindProperty("directionalLight").objectReferenceValue = directionalLight;
+            spawnerSerialized.FindProperty("glassMaterial").objectReferenceValue = GlassMaterialSetup.GetOrCreateGlassMaterial();
 
             if (headTransform != null)
             {

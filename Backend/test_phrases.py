@@ -138,6 +138,10 @@ CASES = [
     # a real headset test where "make it gold" (line above) was initially (incorrectly) parsed
     # as recolor before the color/material field descriptions were tightened.
     ("make it silver", "retexture", None, None, None, None, None, None, False, "chrome"),
+    # Stage 9.1: glass -- same curated-list pattern as every other material above.
+    ("make it glass", "retexture", None, None, None, None, None, None, False, "glass"),
+    ("make it transparent", "retexture", None, None, None, None, None, None, False, "glass"),
+    ("give it a glassy look", "retexture", None, None, None, None, None, None, False, "glass"),
     # Recolor/retexture disambiguation -- a plain color word alone should stay recolor, not
     # get pulled into retexture just because a material also happens to be describable by color.
     ("turn it red", "recolor", None, "red", None, None, None, None, False, None),
