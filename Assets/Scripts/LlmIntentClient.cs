@@ -30,7 +30,7 @@ namespace ObjectSpawning
         class ParseIntentResponseBody
         {
             public bool recognized;
-            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture | adjust_lighting | undo | reroll_style
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture | adjust_lighting | undo | reroll_style | save_scene | load_scene | recall_asset | export_mesh
             public string shape;       // create only
             public string prompt;      // generate only
             public string color;       // create or recolor
@@ -138,17 +138,18 @@ namespace ObjectSpawning
                 yield break;
             }
 
-            if (action == "generate")
+            if (action == "generate" || action == "recall_asset")
             {
                 if (string.IsNullOrWhiteSpace(response.prompt))
                 {
-                    var error = "Backend returned action=generate with no prompt.";
+                    var error = $"Backend returned action={action} with no prompt.";
                     Debug.LogWarning($"[LlmIntentClient] {error}");
                     onComplete?.Invoke(null, null, null, elapsedMs, error, false);
                     yield break;
                 }
 
-                onComplete?.Invoke(null, null, new GenerateIntent(response.prompt.Trim()), elapsedMs, null, lowConfidence);
+                var isRecall = action == "recall_asset";
+                onComplete?.Invoke(null, null, new GenerateIntent(response.prompt.Trim(), isRecall), elapsedMs, null, lowConfidence);
                 yield break;
             }
 
@@ -291,6 +292,15 @@ namespace ObjectSpawning
                     return true;
                 case "reroll_style":
                     intent = new EditIntent(EditAction.RerollStyle);
+                    return true;
+                case "save_scene":
+                    intent = new EditIntent(EditAction.SaveScene);
+                    return true;
+                case "load_scene":
+                    intent = new EditIntent(EditAction.LoadScene);
+                    return true;
+                case "export_mesh":
+                    intent = new EditIntent(EditAction.ExportMesh);
                     return true;
                 default:
                     intent = default;

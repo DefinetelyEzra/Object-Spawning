@@ -1,3 +1,4 @@
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -538,6 +539,7 @@ namespace ObjectSpawning.Tests
                 spawner.Duplicate(null);
                 spawner.Retexture(null, MaterialNaming.All[0]);
                 spawner.RerollStyle(null);
+                spawner.ExportMesh(null);
             });
 
             Assert.DoesNotThrow(() => spawner.Undo());
@@ -767,6 +769,173 @@ namespace ObjectSpawning.Tests
 
             Object.DestroyImmediate(target);
             Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void SaveScene_ThenLoadScene_RestoresTransformColorAndMaterial()
+        {
+            var saveFilePath = Path.Combine(Application.persistentDataPath, "scene_save.json");
+            if (File.Exists(saveFilePath))
+                File.Delete(saveFilePath);
+
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            // LoadScene rebuilds via Spawn/Retexture internally, each touching a fresh Renderer's
+            // .material for the first time -- the exact count/order isn't this test's concern (see
+            // every other test's ExpectMaterialInstantiateWarning for that), only that the
+            // round-trip itself is correct, so the editor-only leak warning is suppressed rather
+            // than precisely counted here.
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                var cube = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, VoiceIntentParser.DefaultScale));
+                cube.transform.SetPositionAndRotation(new Vector3(1f, 2f, 3f), Quaternion.Euler(0f, 45f, 0f));
+                cube.transform.localScale = new Vector3(0.5f, 0.6f, 0.7f);
+                spawner.Retexture(cube, MaterialNaming.All[0]);
+
+                var beforePos = cube.transform.position;
+                var beforeRot = cube.transform.rotation;
+                var beforeScale = cube.transform.localScale;
+                var beforeMetallic = cube.GetComponent<Renderer>().material.GetFloat("_Metallic");
+
+                spawner.SaveScene();
+                spawner.LoadScene();
+
+                Assert.AreEqual(1, spawner.SpawnCount);
+                var restored = spawner.LastTouchedGameObject;
+                Assert.IsNotNull(restored);
+
+                Assert.AreEqual(beforePos.x, restored.transform.position.x, 0.001f);
+                Assert.AreEqual(beforePos.y, restored.transform.position.y, 0.001f);
+                Assert.AreEqual(beforePos.z, restored.transform.position.z, 0.001f);
+                Assert.AreEqual(beforeRot.x, restored.transform.rotation.x, 0.001f);
+                Assert.AreEqual(beforeRot.y, restored.transform.rotation.y, 0.001f);
+                Assert.AreEqual(beforeRot.z, restored.transform.rotation.z, 0.001f);
+                Assert.AreEqual(beforeRot.w, restored.transform.rotation.w, 0.001f);
+                Assert.AreEqual(beforeScale.x, restored.transform.localScale.x, 0.001f);
+                Assert.AreEqual(beforeScale.y, restored.transform.localScale.y, 0.001f);
+                Assert.AreEqual(beforeScale.z, restored.transform.localScale.z, 0.001f);
+                Assert.AreEqual(beforeMetallic, restored.GetComponent<Renderer>().material.GetFloat("_Metallic"));
+
+                Object.DestroyImmediate(restored);
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+            }
+
+            Object.DestroyImmediate(go);
+            File.Delete(saveFilePath);
+        }
+
+        [Test]
+        public void LoadScene_NoSaveFile_DoesNotThrow()
+        {
+            var saveFilePath = Path.Combine(Application.persistentDataPath, "scene_save.json");
+            if (File.Exists(saveFilePath))
+                File.Delete(saveFilePath);
+
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            Assert.DoesNotThrow(() => spawner.LoadScene());
+
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void MeshCache_SaveThenTryGetCachedBytes_RoundTrips()
+        {
+            const string prompt = "unit-test-mesh-cache-prompt-xyz123";
+            var bytes = new byte[] { 1, 2, 3, 4, 5 };
+
+            MeshCache.Save(prompt, bytes);
+
+            Assert.IsTrue(MeshCache.TryGetCachedBytes(prompt, out var readBack));
+            CollectionAssert.AreEqual(bytes, readBack);
+        }
+
+        [Test]
+        public void MeshCache_TryGetCachedBytes_UnknownPrompt_ReturnsFalse()
+        {
+            Assert.IsFalse(MeshCache.TryGetCachedBytes("definitely-never-cached-unit-test-prompt-abc987", out var bytes));
+            Assert.IsNull(bytes);
+        }
+
+        [Test]
+        public void AssetLibrary_RememberThenTryFindByQuery_FindsIt()
+        {
+            const string prompt = "a shimmering unit test lamp xyz789";
+            AssetLibrary.Remember(prompt);
+
+            Assert.IsTrue(AssetLibrary.TryFindByQuery("xyz789", out var found));
+            Assert.AreEqual(prompt, found);
+        }
+
+        [Test]
+        public void AssetLibrary_TryFindByQuery_NoMatch_ReturnsFalse()
+        {
+            Assert.IsFalse(AssetLibrary.TryFindByQuery("definitely-not-a-real-remembered-thing-qqzz11", out var found));
+            Assert.IsNull(found);
+        }
+
+        [Test]
+        public void ExportMesh_NonGeneratedTarget_LogsWarningAndDoesNothing()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex(".*isn't a generated object.*"));
+            spawner.ExportMesh(target);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ExportMesh_GeneratedTargetWithCachedBytes_WritesFile()
+        {
+            const string prompt = "unit-test-export-mesh-prompt-xyz456";
+            var bytes = new byte[] { 9, 8, 7, 6 };
+            MeshCache.Save(prompt, bytes);
+
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            var target = new GameObject("Generating_test");
+            var info = target.AddComponent<SpawnedObjectInfo>();
+            info.Id = 999;
+            info.Shape = PrimitiveShape.Generated;
+            info.GeneratedPrompt = prompt;
+
+            spawner.ExportMesh(target);
+
+            var exportsDir = Path.Combine(Application.persistentDataPath, "Exports");
+            var files = Directory.Exists(exportsDir) ? Directory.GetFiles(exportsDir, "*_999.glb") : new string[0];
+            Assert.AreEqual(1, files.Length);
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(files[0]));
+
+            File.Delete(files[0]);
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void ExportMesh_GeneratedTargetWithNoCachedBytes_LogsWarningAndDoesNothing()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            var target = new GameObject("Generating_test");
+            var info = target.AddComponent<SpawnedObjectInfo>();
+            info.Shape = PrimitiveShape.Generated;
+            info.GeneratedPrompt = "definitely-never-cached-export-test-prompt-qqzz22";
+
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex(".*No cached mesh file.*"));
+            spawner.ExportMesh(target);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(go);
         }
     }
 }

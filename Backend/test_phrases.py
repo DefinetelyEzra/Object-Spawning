@@ -172,6 +172,22 @@ CASES = [
     ("try a different style", "reroll_style", None, None, None, None, None, None, False, None),
     ("try something else", "reroll_style", None, None, None, None, None, None, False, None),
     ("give it a different look", "reroll_style", None, None, None, None, None, None, False, None),
+    # Stage 10: save/load -- no other fields.
+    ("save the scene", "save_scene", None, None, None, None, None, None, False, None),
+    ("save my scene", "save_scene", None, None, None, None, None, None, False, None),
+    ("load the scene", "load_scene", None, None, None, None, None, None, False, None),
+    ("restore my saved scene", "load_scene", None, None, None, None, None, None, False, None),
+    # Stage 10: recall_asset -- prompt should come back non-empty (its exact wording isn't
+    # pinned, same as the generate cases above), and this must NOT be confused with a plain
+    # generate for a brand-new object.
+    ("use the lamp from earlier", "recall_asset", None, None, None, None, None, None, True, None),
+    ("bring back the gargoyle I made", "recall_asset", None, None, None, None, None, None, True, None),
+    ("spawn a stone gargoyle statue", "generate", None, None, None, None, None, None, True, None),
+    # Stage 10 follow-up: export_mesh -- edits one specific object (like retexture), not the
+    # whole room, so must not be confused with save_scene.
+    ("export this mesh", "export_mesh", None, None, None, None, None, None, False, None),
+    ("save this model as a file", "export_mesh", None, None, None, None, None, None, False, None),
+    ("save this mesh so I can use it in Blender", "export_mesh", None, None, None, None, None, None, False, None),
 ]
 
 

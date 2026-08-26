@@ -203,9 +203,12 @@ namespace ObjectSpawning
                     }
                     else if (generateIntent.HasValue)
                     {
-                        Debug.Log($"[VoiceCommandController] LLM parsed generate intent in {llmLatencyMs:0}ms " +
-                            $"(total {LastTotalLatencyMs:0}ms): \"{generateIntent.Value.Prompt}\"");
-                        spawner.SpawnGenerating(generateIntent.Value.Prompt);
+                        Debug.Log($"[VoiceCommandController] LLM parsed {(generateIntent.Value.IsRecall ? "recall" : "generate")} " +
+                            $"intent in {llmLatencyMs:0}ms (total {LastTotalLatencyMs:0}ms): \"{generateIntent.Value.Prompt}\"");
+                        if (generateIntent.Value.IsRecall)
+                            spawner.SpawnFromLibrary(generateIntent.Value.Prompt);
+                        else
+                            spawner.SpawnGenerating(generateIntent.Value.Prompt);
                     }
                     else if (!string.IsNullOrEmpty(llmError))
                     {
@@ -234,7 +237,12 @@ namespace ObjectSpawning
             else if (pendingEditIntent.HasValue)
                 ApplyEdit(pendingEditIntent.Value);
             else if (pendingGenerateIntent.HasValue)
-                spawner.SpawnGenerating(pendingGenerateIntent.Value.Prompt);
+            {
+                if (pendingGenerateIntent.Value.IsRecall)
+                    spawner.SpawnFromLibrary(pendingGenerateIntent.Value.Prompt);
+                else
+                    spawner.SpawnGenerating(pendingGenerateIntent.Value.Prompt);
+            }
         }
 
         void ClearPending()
@@ -250,7 +258,9 @@ namespace ObjectSpawning
             if (spawn.HasValue)
                 return $"spawn a {spawn.Value.Shape}";
             if (generate.HasValue)
-                return $"generate \"{generate.Value.Prompt}\"";
+                return generate.Value.IsRecall
+                    ? $"bring back \"{generate.Value.Prompt}\" from the library"
+                    : $"generate \"{generate.Value.Prompt}\"";
             if (edit.HasValue)
                 return $"{edit.Value.Action} the current object";
             return "that";
@@ -273,9 +283,27 @@ namespace ObjectSpawning
 
         void TryLocalFallback(string transcript)
         {
-            // Checked first, ahead of everything else: it only ever matches when an explicit
-            // scene-referring word is present ("room"/"lighting"/"ambiance"/...), so it can never
-            // collide with a normal per-object edit -- but it DOES need to win over the generic
+            // Stage 10: checked before anything else -- requires an explicit trigger word
+            // ("from earlier", "again", "before", ...) so it can never collide with a genuine new
+            // "spawn a lamp" request, and short-circuits straight to the asset library rather than
+            // going through ApplyEdit/Spawn (a recall isn't really an edit or a spawn intent).
+            if (VoiceIntentParser.TryParseRecall(transcript, out var recallQuery))
+            {
+                spawner.SpawnFromLibrary(recallQuery);
+                return;
+            }
+
+            // Stage 10: same reasoning as the recall check above -- unambiguous multi-word
+            // phrases (save/load/export), checked early so nothing else could shadow them.
+            if (VoiceIntentParser.TryParseSaveLoad(transcript, out var saveLoadIntent))
+            {
+                ApplyEdit(saveLoadIntent);
+                return;
+            }
+
+            // It only ever matches when an explicit scene-referring word is present ("room"/
+            // "lighting"/"ambiance"/...), so it can never collide with a normal per-object edit --
+            // but it DOES need to win over the generic
             // bigger/smaller check inside TryParseEditAction for the phrases it does match
             // ("make the room brighter" is scene-wide, not a request to resize the current object).
             if (VoiceIntentParser.TryParseLighting(transcript, out var lightingIntent))
@@ -352,6 +380,18 @@ namespace ObjectSpawning
                 return;
             }
 
+            // Stage 10: same "no single object" shape -- persists/restores the whole room.
+            if (intent.Action == EditAction.SaveScene)
+            {
+                spawner.SaveScene();
+                return;
+            }
+            if (intent.Action == EditAction.LoadScene)
+            {
+                spawner.LoadScene();
+                return;
+            }
+
             var target = objectSelector != null ? objectSelector.GetPointedAtObject() : null;
             if (target == null)
                 target = spawner.LastTouchedGameObject;
@@ -378,6 +418,7 @@ namespace ObjectSpawning
                         spawner.Retexture(target, intent.Material.Value);
                     break;
                 case EditAction.RerollStyle: spawner.RerollStyle(target); break;
+                case EditAction.ExportMesh: spawner.ExportMesh(target); break;
             }
         }
     }

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -97,6 +98,14 @@ namespace ObjectSpawning
         // no longer be reached) or the whole room is cleared -- never left to leak indefinitely.
         readonly HashSet<GameObject> hiddenForUndo = new();
 
+        // Stage 10: set for the duration of LoadScene's restore loop -- a restored object's final
+        // transform (including scale) is applied synchronously right after Spawn/SpawnGenerating
+        // return, which would otherwise race against the pop-in animation those already start
+        // (it captures ITS OWN target scale at call time and keeps overwriting localScale for the
+        // next quarter second, fighting the value LoadScene just set). Restored objects should
+        // just appear already in place, not visibly pop in anyway.
+        bool suppressSpawnAnimation;
+
         void PushUndo(string description, System.Action revert, System.Action onEvicted = null)
         {
             undoStack.AddLast(new UndoEntry { Description = description, Revert = revert, OnEvicted = onEvicted });
@@ -150,6 +159,21 @@ namespace ObjectSpawning
         void OnEnable() => spawnAction.Enable();
 
         void OnDisable() => spawnAction.Disable();
+
+        // Stage 10: "closing and reopening the app restores your scene" -- restore on launch,
+        // and save whenever the app is about to stop being visible. OnApplicationPause (not
+        // OnApplicationQuit) is the reliable signal on Android/Quest: backgrounding the app
+        // (Home button, app switch) is the common case and OnApplicationQuit often doesn't fire
+        // cleanly there, while OnApplicationQuit is kept too for the desktop/editor case.
+        void Start() => LoadScene();
+
+        void OnApplicationPause(bool paused)
+        {
+            if (paused)
+                SaveScene();
+        }
+
+        void OnApplicationQuit() => SaveScene();
 
         void OnSpawnPerformed(InputAction.CallbackContext context) =>
             Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, 0.2f));
@@ -213,7 +237,8 @@ namespace ObjectSpawning
             LastTouchedGameObject = go;
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Spawned {intent.Shape} #{SpawnCount} at {position}");
-            StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            if (!suppressSpawnAnimation)
+                StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
             PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
             return go;
         }
@@ -234,16 +259,26 @@ namespace ObjectSpawning
             ApplyColor(go, GeneratingPlaceholderColor);
             var id = Register(go, PrimitiveShape.Generated);
             visualState[id] = new VisualState(GeneratingPlaceholderColor, null);
+            go.GetComponent<SpawnedObjectInfo>().GeneratedPrompt = prompt;
 
             SpawnCount++;
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Generating placeholder spawned for prompt=\"{prompt}\".");
-            StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            if (!suppressSpawnAnimation)
+                StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
             PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
 
-            if (meshGenerationClient != null)
+            // Stage 10: a cache hit skips Tripo3D entirely -- works even without a
+            // MeshGenerationClient/backend wired at all, since there's nothing left to generate.
+            if (MeshCache.TryGetCachedBytes(prompt, out var cachedBytes))
+            {
+                Debug.Log($"[PrimitiveSpawner] Cache hit for prompt=\"{prompt}\" -- importing without generating.");
+                PendingGenerationCount++;
+                StartCoroutine(RunCachedImport(go, cachedBytes, prompt));
+            }
+            else if (meshGenerationClient != null)
             {
                 PendingGenerationCount++;
                 StartCoroutine(RunGeneration(go, prompt));
@@ -255,6 +290,82 @@ namespace ObjectSpawning
             }
 
             return go;
+        }
+
+        // Stage 10: looks up the personal asset library by a loose keyword query ("lamp" ->
+        // whichever remembered prompt contains "lamp") and spawns it the normal way -- since the
+        // prompt was generated before, SpawnGenerating's own cache check above will almost always
+        // find it on disk and skip regeneration entirely. Falls through to a real (paid)
+        // regeneration using the SAME original prompt only if the cache file happens to be gone.
+        public GameObject SpawnFromLibrary(string query)
+        {
+            if (!AssetLibrary.TryFindByQuery(query, out var prompt))
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] No matching asset in the library for \"{query}\".");
+                return null;
+            }
+
+            Debug.Log($"[PrimitiveSpawner] Recalling \"{prompt}\" from the asset library (query=\"{query}\").");
+            return SpawnGenerating(prompt);
+        }
+
+        static string ExportsDir => Path.Combine(Application.persistentDataPath, "Exports");
+
+        // Hands a copy of a generated object's original downloaded mesh out of the app's private
+        // storage as a plain, portable .glb -- the exact file Tripo3D produced, untouched, so it
+        // opens directly in Blender or re-imports into any other Unity project. Pulled off the
+        // headset the same way every other on-device file in this project already is (adb pull
+        // from persistentDataPath) -- writing straight to a public Downloads folder from a
+        // sideloaded app needs enough extra surface area under Android's scoped storage rules
+        // (MediaStore, runtime permissions) that it isn't worth it for what's fundamentally a
+        // dev/creator convenience, not something a guest at the exhibition needs.
+        public void ExportMesh(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            if (info == null || info.Shape != PrimitiveShape.Generated || string.IsNullOrEmpty(info.GeneratedPrompt))
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] {target.name} isn't a generated object -- nothing to export.");
+                return;
+            }
+
+            if (!MeshCache.TryGetCachedBytes(info.GeneratedPrompt, out var bytes))
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] No cached mesh file for \"{info.GeneratedPrompt}\" -- can't export.");
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(ExportsDir);
+                var path = Path.Combine(ExportsDir, $"{Slugify(info.GeneratedPrompt)}_{info.Id}.glb");
+                File.WriteAllBytes(path, bytes);
+                Debug.Log($"[PrimitiveSpawner] Exported \"{info.GeneratedPrompt}\" to {path} ({bytes.Length} bytes).");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] Failed to export mesh: {e.Message}");
+            }
+        }
+
+        // "a stone gargoyle statue" -> "a_stone_gargoyle_statue" -- readable in a file listing,
+        // unlike MeshCache's own opaque hash-named files (which are keyed for lookup, not for a
+        // person to recognize).
+        static string Slugify(string text)
+        {
+            var chars = new char[text.Length];
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = char.ToLowerInvariant(text[i]);
+                chars[i] = char.IsLetterOrDigit(c) ? c : '_';
+            }
+
+            var slug = new string(chars).Trim('_');
+            while (slug.Contains("__"))
+                slug = slug.Replace("__", "_");
+            return slug.Length > 0 ? slug : "mesh";
         }
 
         IEnumerator RunGeneration(GameObject placeholder, string prompt)
@@ -290,28 +401,44 @@ namespace ObjectSpawning
                 yield break;
             }
 
-            yield return GeneratedMeshImporter.DownloadAndImport(glbUrl, placeholder.transform, (importedRoot, importError) =>
-            {
-                if (placeholder == null)
-                {
-                    Debug.Log($"[PrimitiveSpawner] Generated mesh for prompt=\"{prompt}\" finished after " +
-                        "its placeholder was deleted -- discarding result.");
-                    if (importedRoot != null)
-                        DestroyObject(importedRoot);
-                    return;
-                }
-
-                if (importError != null)
-                {
-                    LastGenerationError = importError;
-                    Debug.LogWarning($"[PrimitiveSpawner] {importError}");
-                    return;
-                }
-
-                SwapPlaceholderVisuals(placeholder, importedRoot);
-            });
+            yield return GeneratedMeshImporter.DownloadAndImport(glbUrl, placeholder.transform,
+                (importedRoot, importError) => FinishImport(placeholder, importedRoot, importError, prompt),
+                onRawBytesDownloaded: bytes => MeshCache.Save(prompt, bytes));
 
             PendingGenerationCount--;
+        }
+
+        // Stage 10: the cache-hit twin of RunGeneration above -- same placeholder-swap ending,
+        // just skipping the network request/poll entirely since the bytes are already on disk.
+        IEnumerator RunCachedImport(GameObject placeholder, byte[] cachedBytes, string prompt)
+        {
+            yield return GeneratedMeshImporter.ImportBytes(cachedBytes,
+                placeholder != null ? placeholder.transform : null,
+                (importedRoot, importError) => FinishImport(placeholder, importedRoot, importError, prompt));
+
+            PendingGenerationCount--;
+        }
+
+        void FinishImport(GameObject placeholder, GameObject importedRoot, string importError, string prompt)
+        {
+            if (placeholder == null)
+            {
+                Debug.Log($"[PrimitiveSpawner] Generated mesh for prompt=\"{prompt}\" finished after " +
+                    "its placeholder was deleted -- discarding result.");
+                if (importedRoot != null)
+                    DestroyObject(importedRoot);
+                return;
+            }
+
+            if (importError != null)
+            {
+                LastGenerationError = importError;
+                Debug.LogWarning($"[PrimitiveSpawner] {importError}");
+                return;
+            }
+
+            SwapPlaceholderVisuals(placeholder, importedRoot);
+            AssetLibrary.Remember(prompt);
         }
 
         // Placeholder was a plain CreatePrimitive(Cube) -- strip its primitive rendering/collision
@@ -356,9 +483,19 @@ namespace ObjectSpawning
             LastTouchedGameObject = placeholder;
             Debug.Log($"[PrimitiveSpawner] Swapped generated mesh onto {placeholder.name}.");
 
+            // If the object was explicitly retextured while generation was still pending (a live
+            // "make it wood" right after spawning, or LoadScene restoring one that was retextured
+            // before being saved), that preset was only ever applied to the temporary placeholder
+            // cube -- reapply it now that the real mesh's own renderers exist, or the freshly
+            // imported mesh's own downloaded texture would silently overwrite it.
+            var info = placeholder.GetComponent<SpawnedObjectInfo>();
+            if (info != null && visualState.TryGetValue(info.Id, out var vs) && vs.Preset.HasValue)
+                ApplyRetextureCore(placeholder, vs.Preset.Value);
+
             // Collider above is already sized to the mesh's true final bounds, so selection/
             // interaction works immediately -- only the visual scale animates in.
-            StartCoroutine(AnimateScaleIn(importedRoot.transform, importedRoot.transform.localScale));
+            if (!suppressSpawnAnimation)
+                StartCoroutine(AnimateScaleIn(importedRoot.transform, importedRoot.transform.localScale));
         }
 
         // Scales an object up from nothing over a short, cheap ease-out -- a single Vector3 lerp
@@ -1013,6 +1150,184 @@ namespace ObjectSpawning
             LastGenerationError = "";
 
             Debug.Log($"[PrimitiveSpawner] Cleared {count} object(s).");
+        }
+
+        // Stage 10: one row per surviving spawned object -- transform, color/material, and (for a
+        // generated mesh) the original prompt rather than a mesh reference, since Tripo3D's result
+        // URLs expire minutes after generation and can't be relied on to still work on a later
+        // launch. formatVersion exists so a future stage can tell an old save apart from a new one
+        // rather than silently misreading it (see the roadmap's own warning about exactly this).
+        [System.Serializable]
+        class SavedObject
+        {
+            public string shape;
+            public float posX, posY, posZ;
+            public float rotX, rotY, rotZ, rotW;
+            public float scaleX, scaleY, scaleZ;
+            public float colorR, colorG, colorB, colorA;
+            public string materialPreset; // empty means "no preset, plain color"
+            public string generatedPrompt; // only meaningful when shape == Generated
+            public float lightIntensity, lightRange; // only meaningful when shape == PointLight
+        }
+
+        [System.Serializable]
+        class SceneSaveFile
+        {
+            public int formatVersion = 1;
+            public List<SavedObject> objects = new();
+        }
+
+        static string SceneSaveFilePath => Path.Combine(Application.persistentDataPath, "scene_save.json");
+
+        // Writes every currently-visible spawned object (never anything Delete is only hiding for
+        // possible undo) to a single JSON file. Called automatically on pause/quit (see
+        // OnApplicationPause/OnApplicationQuit) and available as its own voice command ("save the
+        // scene") for an explicit checkpoint.
+        public void SaveScene()
+        {
+            var save = new SceneSaveFile();
+            foreach (var kv in registry)
+            {
+                var go = kv.Value;
+                if (go == null)
+                    continue;
+                var info = go.GetComponent<SpawnedObjectInfo>();
+                if (info == null)
+                    continue;
+
+                var vs = visualState.TryGetValue(kv.Key, out var state) ? state : new VisualState(Color.white, null);
+                var t = go.transform;
+                var entry = new SavedObject
+                {
+                    shape = info.Shape.ToString(),
+                    posX = t.position.x, posY = t.position.y, posZ = t.position.z,
+                    rotX = t.rotation.x, rotY = t.rotation.y, rotZ = t.rotation.z, rotW = t.rotation.w,
+                    scaleX = t.localScale.x, scaleY = t.localScale.y, scaleZ = t.localScale.z,
+                    colorR = vs.Color.r, colorG = vs.Color.g, colorB = vs.Color.b, colorA = vs.Color.a,
+                    materialPreset = vs.Preset?.Name ?? "",
+                    generatedPrompt = info.Shape == PrimitiveShape.Generated ? info.GeneratedPrompt : "",
+                };
+
+                // Resize reinterprets bigger/smaller as intensity/range for a Light target instead
+                // of transform scale (see Resize's own comment) -- scale alone wouldn't capture a
+                // light that's been brightened/dimmed since it was spawned.
+                if (go.TryGetComponent<Light>(out var light))
+                {
+                    entry.lightIntensity = light.intensity;
+                    entry.lightRange = light.range;
+                }
+
+                save.objects.Add(entry);
+            }
+
+            try
+            {
+                Directory.CreateDirectory(Application.persistentDataPath);
+                File.WriteAllText(SceneSaveFilePath, JsonUtility.ToJson(save, prettyPrint: true));
+                Debug.Log($"[PrimitiveSpawner] Saved {save.objects.Count} object(s) to {SceneSaveFilePath}.");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] Failed to save scene: {e.Message}");
+            }
+        }
+
+        // Clears the current room and rebuilds it from the last save. A generated object's mesh
+        // is recreated by re-running SpawnGenerating on its original prompt -- MeshCache means
+        // that's almost always a free, instant local import rather than a real regeneration.
+        public void LoadScene()
+        {
+            if (!File.Exists(SceneSaveFilePath))
+            {
+                Debug.Log("[PrimitiveSpawner] No saved scene found.");
+                return;
+            }
+
+            SceneSaveFile save;
+            try
+            {
+                save = JsonUtility.FromJson<SceneSaveFile>(File.ReadAllText(SceneSaveFilePath));
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] Failed to read saved scene: {e.Message}");
+                return;
+            }
+
+            if (save?.objects == null)
+            {
+                Debug.LogWarning("[PrimitiveSpawner] Saved scene file was empty or malformed.");
+                return;
+            }
+
+            ClearAll();
+
+            suppressSpawnAnimation = true;
+            try
+            {
+                foreach (var entry in save.objects)
+                    RestoreObject(entry);
+            }
+            finally
+            {
+                suppressSpawnAnimation = false;
+            }
+
+            // A fresh "undo" right after loading should never unwind back into the room that
+            // existed a moment ago pre-clear -- same reasoning as ClearAll's own stack reset.
+            undoStack.Clear();
+
+            Debug.Log($"[PrimitiveSpawner] Loaded {save.objects.Count} object(s) from {SceneSaveFilePath}.");
+        }
+
+        void RestoreObject(SavedObject entry)
+        {
+            if (!System.Enum.TryParse<PrimitiveShape>(entry.shape, out var shape))
+            {
+                Debug.LogWarning($"[PrimitiveSpawner] Skipping saved object with unknown shape '{entry.shape}'.");
+                return;
+            }
+
+            var color = new Color(entry.colorR, entry.colorG, entry.colorB, entry.colorA);
+            var position = new Vector3(entry.posX, entry.posY, entry.posZ);
+            var rotation = new Quaternion(entry.rotX, entry.rotY, entry.rotZ, entry.rotW);
+            var scale = new Vector3(entry.scaleX, entry.scaleY, entry.scaleZ);
+
+            GameObject go;
+            if (shape == PrimitiveShape.Generated)
+            {
+                if (string.IsNullOrEmpty(entry.generatedPrompt))
+                {
+                    Debug.LogWarning("[PrimitiveSpawner] Skipping saved generated object with no stored prompt.");
+                    return;
+                }
+                go = SpawnGenerating(entry.generatedPrompt);
+            }
+            else
+            {
+                go = Spawn(new SpawnIntent(shape, color, VoiceIntentParser.DefaultScale));
+            }
+
+            if (go == null)
+                return; // e.g. the point-light cap was already reached by an earlier entry
+
+            go.transform.SetPositionAndRotation(position, rotation);
+            go.transform.localScale = scale;
+
+            if (shape == PrimitiveShape.PointLight && go.TryGetComponent<Light>(out var light))
+            {
+                light.intensity = entry.lightIntensity;
+                light.range = entry.lightRange;
+            }
+
+            // A generated object with no stored preset keeps whatever texture its own mesh
+            // downloads with -- applying a flat recolor over that would just tint it wrong (see
+            // SwapPlaceholderVisuals for why a WITH-preset one below is safe to apply immediately
+            // even before that mesh has finished importing).
+            if (!string.IsNullOrEmpty(entry.materialPreset) && MaterialNaming.TryGetMaterial(entry.materialPreset, out var preset))
+                ApplyRetextureCore(go, preset);
+            else if (shape != PrimitiveShape.Generated)
+                ApplyRecolorCore(go, color);
         }
 
         // Exposed for the exhibition scene's spawn-preview marker: X/Z from the current look

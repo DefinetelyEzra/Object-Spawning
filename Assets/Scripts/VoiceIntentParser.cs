@@ -55,7 +55,17 @@ namespace ObjectSpawning
     public readonly struct GenerateIntent
     {
         public readonly string Prompt;
-        public GenerateIntent(string prompt) => Prompt = prompt;
+
+        // Stage 10: true means Prompt is a search query into the personal asset library ("use the
+        // lamp from earlier") rather than a fresh text-to-3D description -- PrimitiveSpawner
+        // resolves it via SpawnFromLibrary instead of kicking off a brand-new generation.
+        public readonly bool IsRecall;
+
+        public GenerateIntent(string prompt, bool isRecall = false)
+        {
+            Prompt = prompt;
+            IsRecall = isRecall;
+        }
     }
 
     // Stage 5: how a newly created object should be placed relative to an existing one.
@@ -119,6 +129,17 @@ namespace ObjectSpawning
         // curated preset than whatever it's wearing now, WITHOUT the user naming a specific one.
         // Unlike Retexture, has no Material of its own; PrimitiveSpawner.RerollStyle picks it.
         RerollStyle,
+
+        // Stage 10: persist/restore the whole room -- no per-object target, same early-exit
+        // dispatch as ClearAll/AdjustLighting/Undo.
+        SaveScene,
+        LoadScene,
+
+        // Stage 10 follow-up: hands the current object's original downloaded mesh out of the
+        // app's private storage as a plain .glb file, for use in Blender or another Unity
+        // project -- DOES resolve a per-object target like Retexture/RerollStyle (there's no
+        // mesh to export without one), unlike SaveScene/LoadScene above.
+        ExportMesh,
     }
 
     public readonly struct EditIntent
@@ -355,6 +376,7 @@ namespace ObjectSpawning
                 "brighter", "brighten", "lighter", "dimmer", "dim", "darker", "darken",
                 "room", "lighting", "ambiance", "ambience", "environment", "scene",
                 "undo", "different", "style", "something", "else", "switch",
+                "save", "load", "restore", "earlier", "previously",
             });
             return words.ToArray();
         }
@@ -590,6 +612,118 @@ namespace ObjectSpawning
             }
 
             return false;
+        }
+
+        // Stage 10: same plain-substring approach as RerollStylePhrases above -- multi-word,
+        // unambiguous, no overlap with any other vocabulary in this file.
+        static readonly string[] SaveScenePhrases =
+            { "save the scene", "save my scene", "save this scene", "save the room", "save my room" };
+        static readonly string[] LoadScenePhrases =
+        {
+            "load the scene", "load my scene", "load the room", "load my room",
+            "restore the scene", "restore my scene", "restore the room",
+        };
+        static readonly string[] ExportMeshPhrases =
+        {
+            "export this", "export the mesh", "export this mesh", "export this model",
+            "save this mesh", "save this model", "save the mesh", "save the model",
+        };
+
+        // Also covers ExportMesh despite the name -- same plain-substring, no-overlap phrase
+        // matching as SaveScene/LoadScene above, just one more no-fuss local command to group
+        // with them rather than a separate near-identical function.
+        public static bool TryParseSaveLoad(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+            foreach (var phrase in SaveScenePhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.SaveScene);
+                    return true;
+                }
+            }
+            foreach (var phrase in LoadScenePhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.LoadScene);
+                    return true;
+                }
+            }
+            foreach (var phrase in ExportMeshPhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.ExportMesh);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Stage 10: the local, no-backend fallback for "use the lamp from earlier" -- much
+        // weaker than the LLM's own recall_asset action (see LlmIntentClient), since it can only
+        // strip a fixed filler list rather than genuinely understand the phrase, but degrades
+        // gracefully rather than not working at all when the backend is unreachable. Requires an
+        // explicit trigger word so it can never collide with a genuine new "spawn a lamp" request.
+        static readonly string[] RecallTriggerPhrases =
+            { "from earlier", "from before", "again", "before", "previously", "last time" };
+        static readonly string[] RecallFillerWords =
+        {
+            "use", "the", "spawn", "bring", "back", "give", "me", "a", "an", "again",
+            "earlier", "before", "from", "previously", "last", "time", "please", "can", "you", "my",
+        };
+
+        public static bool TryParseRecall(string transcript, out string query)
+        {
+            query = null;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+            var hasTrigger = false;
+            foreach (var phrase in RecallTriggerPhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    hasTrigger = true;
+                    break;
+                }
+            }
+            if (!hasTrigger)
+                return false;
+
+            var kept = new List<string>();
+            foreach (var raw in text.Split(' '))
+            {
+                var word = raw.Trim('.', ',', '!', '?');
+                if (word.Length == 0)
+                    continue;
+
+                var isFiller = false;
+                foreach (var filler in RecallFillerWords)
+                {
+                    if (word == filler)
+                    {
+                        isFiller = true;
+                        break;
+                    }
+                }
+                if (!isFiller)
+                    kept.Add(word);
+            }
+
+            if (kept.Count == 0)
+                return false;
+
+            query = string.Join(" ", kept);
+            return true;
         }
 
         static readonly string[] SceneReferringWords =

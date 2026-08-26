@@ -89,6 +89,9 @@ namespace ObjectSpawning
                 "  \"make it look like rusted metal\" / \"make it glass\"\n" +
                 "  \"spawn a light\" / \"make the room brighter\"\n" +
                 "  \"try a different style\" / \"undo that\"\n" +
+                "  \"save the scene\" / \"load the scene\"\n" +
+                "  \"use the lamp from earlier\"\n" +
+                "  \"export this mesh\"\n" +
                 "  \"delete it\" / \"clear the room\"";
         }
     }

@@ -18,7 +18,13 @@ namespace ObjectSpawning
         // result: (importedRoot, null) on success -- already parented under `parent`, scaled, and
         // recentered so its base sits at parent's position. (null, error) on any failure, which
         // callers should treat as "leave the placeholder as-is", never a crash.
-        public static IEnumerator DownloadAndImport(string glbUrl, Transform parent, Action<GameObject, string> onComplete)
+        //
+        // Stage 10: onRawBytesDownloaded (optional) fires with the downloaded GLB bytes right
+        // after a successful download, independent of whether import itself then succeeds -- lets
+        // callers cache the bytes for reuse (see MeshCache) without this class needing to know
+        // anything about caching itself.
+        public static IEnumerator DownloadAndImport(string glbUrl, Transform parent, Action<GameObject, string> onComplete,
+            Action<byte[]> onRawBytesDownloaded = null)
         {
             using var request = UnityWebRequest.Get(glbUrl);
             // These GLBs run 40-50MB (mostly PBR texture data) and are pulled straight from
@@ -54,7 +60,15 @@ namespace ObjectSpawning
 
             var bytes = request.downloadHandler.data;
             Debug.Log($"[GeneratedMeshImporter] Downloaded {bytes?.Length ?? 0} bytes from {glbUrl}");
+            onRawBytesDownloaded?.Invoke(bytes);
 
+            yield return ImportBytes(bytes, parent, onComplete);
+        }
+
+        // Stage 10: the shared second half of DownloadAndImport, split out so a cache hit (bytes
+        // already on disk, see MeshCache) can import without a network round trip at all.
+        public static IEnumerator ImportBytes(byte[] bytes, Transform parent, Action<GameObject, string> onComplete)
+        {
             var importTask = ImportAsync(bytes, parent);
             while (!importTask.IsCompleted)
                 yield return null;

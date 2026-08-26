@@ -41,6 +41,16 @@ phrase) and reroll_style (a vague "try a different style" with no material named
 from retexture) -- plus an optional confidence field the model sets to "low" when it's
 genuinely unsure which action or field applies. The Unity client holds a low-confidence
 result for a spoken yes/no instead of executing it outright.
+
+Stage 10 adds save_scene/load_scene (also no extra fields -- persistence itself is entirely
+client-side, JSON on disk, this endpoint again just needs to recognize the phrase) and
+recall_asset, which reuses the generate action's own "prompt" field to name which
+previously-generated object the user means ("use the lamp from earlier") rather than
+describing a brand-new one -- the client resolves the actual match against its own asset
+library and local mesh cache, this endpoint only has to tell the two apart. export_mesh is a
+third no-extra-field action alongside save_scene/load_scene, but edits one specific object
+(like retexture) rather than the whole room -- it hands that object's original mesh file out
+of the app's private storage for use in Blender or another project.
 """
 import logging
 import os
@@ -95,7 +105,8 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             "action": types.Schema(
                 type="STRING",
                 enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
-                      "delete", "clear", "retexture", "adjust_lighting", "undo", "reroll_style"],
+                      "delete", "clear", "retexture", "adjust_lighting", "undo", "reroll_style",
+                      "recall_asset", "save_scene", "load_scene", "export_mesh"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
@@ -123,7 +134,17 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "a specific one ('try a different style', 'try something else', "
                              "'switch it up', 'give it a different look') -- takes no other fields. "
                              "If a specific material IS named, that's action=retexture with "
-                             "material set instead, never reroll_style. Default to 'create' if "
+                             "material set instead, never reroll_style. 'recall_asset' brings back "
+                             "something generated in a PAST session rather than creating something "
+                             "new -- set prompt to a short description of which one (see the "
+                             "prompt field). 'save_scene' persists the current room; 'load_scene' "
+                             "restores the last saved one -- both take no other fields. "
+                             "'export_mesh' saves the current object's original mesh file out to "
+                             "disk for use outside the app ('export this', 'save this mesh', 'save "
+                             "this model as a file') -- ONLY for that, edits a specific object "
+                             "(resolved elsewhere, same as retexture/reroll_style) and takes no "
+                             "other fields; do not confuse with save_scene, which persists the "
+                             "whole room's layout, not a single mesh file. Default to 'create' if "
                              "omitted.",
             ),
             "shape": types.Schema(
@@ -143,11 +164,16 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
             ),
             "prompt": types.Schema(
                 type="STRING",
-                description="Only for action=generate. A short, clean text-to-3D description of "
+                description="For action=generate, a short, clean text-to-3D description of "
                              "the object (e.g. 'a stone gargoyle statue', 'a medieval sword', "
                              "'a potted cactus'), derived from the user's phrase with filler "
                              "words stripped ('spawn', 'give me a', 'can you make'). Max ~500 "
-                             "characters.",
+                             "characters. For action=recall_asset, a short description of WHICH "
+                             "previously-generated object the user means, in the same style you'd "
+                             "use for a fresh generate prompt but only as much as the user actually "
+                             "referenced (e.g. 'the lamp from earlier' -> 'lamp', 'bring back the "
+                             "stone gargoyle' -> 'stone gargoyle') -- don't invent extra descriptive "
+                             "detail the user didn't say, unlike a real generate prompt.",
             ),
             "color": types.Schema(
                 type="STRING",
@@ -376,9 +402,23 @@ SYSTEM_PROMPT = (
     "Also set confidence='low' whenever the transcript is genuinely ambiguous about WHICH action or "
     "a required field applies, rather than guessing silently -- leave it unset (high) for the "
     "large majority of ordinary, clear commands.\n"
+    "For a request to bring back something generated in a PAST session, not create something new "
+    "('use the lamp from earlier', 'bring back the gargoyle I made', 'spawn the sword again', "
+    "'the one from before'), set action=recall_asset and prompt per that field's own recall "
+    "guidance. This is different from action=generate (a brand-new object never made before) -- "
+    "a bare 'spawn a gargoyle' with no reference to something already made is always generate, "
+    "never recall_asset, even if a similar object happens to already exist.\n"
+    "For 'save the scene', 'save my scene', 'save this' (persisting the current room so it can be "
+    "restored later), set action=save_scene and no other fields. For 'load the scene', 'load my "
+    "scene', 'restore my scene', 'load my saved scene' (bringing back a previously saved room), "
+    "set action=load_scene and no other fields.\n"
+    "For 'export this', 'export this mesh', 'save this model as a file', 'save this mesh so I can "
+    "use it in Blender' (getting the current object's own mesh file out of the app), set "
+    "action=export_mesh and no other fields -- this edits one specific object, not the whole room, "
+    "so don't confuse it with save_scene.\n"
     "If the transcript doesn't describe either a create, generate, edit, clear, retexture, "
-    "adjust_lighting, undo, or reroll_style command, set recognized to false and omit the other "
-    "fields."
+    "adjust_lighting, undo, reroll_style, recall_asset, save_scene, load_scene, or export_mesh "
+    "command, set recognized to false and omit the other fields."
 )
 
 
