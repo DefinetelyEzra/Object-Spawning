@@ -937,5 +937,142 @@ namespace ObjectSpawning.Tests
             Object.DestroyImmediate(target);
             Object.DestroyImmediate(go);
         }
+
+        [Test]
+        public void ShowWireframe_AddsLineTopologyOverlayChild()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.ShowWireframe(target);
+
+            var overlay = target.transform.Find("PipelineWireframe");
+            Assert.IsNotNull(overlay, "Expected a wireframe overlay child directly under the target's own MeshFilter transform.");
+            var meshFilter = overlay.GetComponent<MeshFilter>();
+            Assert.IsNotNull(meshFilter);
+            Assert.AreEqual(MeshTopology.Lines, meshFilter.sharedMesh.GetTopology(0));
+            Assert.Greater(meshFilter.sharedMesh.GetIndexCount(0), 0);
+            Assert.AreEqual(0, meshFilter.sharedMesh.GetIndexCount(0) % 2, "Line topology index count should be a multiple of 2.");
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ShowWireframe_CalledTwice_DoesNotDuplicateOverlay()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.ShowWireframe(target);
+            spawner.ShowWireframe(target);
+
+            var overlays = 0;
+            foreach (Transform child in target.transform)
+            {
+                if (child.name == "PipelineWireframe")
+                    overlays++;
+            }
+            Assert.AreEqual(1, overlays);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ShowNormalRendering_AfterWireframe_RemovesOverlayAndRestoresColor()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var before = target.GetComponent<Renderer>().material.color;
+
+            spawner.ShowWireframe(target);
+            Assert.IsNotNull(target.transform.Find("PipelineWireframe"));
+
+            spawner.ShowNormalRendering(target);
+
+            Assert.IsNull(target.transform.Find("PipelineWireframe"));
+            Assert.AreEqual(before, target.GetComponent<Renderer>().material.color);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ShowWireframe_DisablesBaseRendererButNotOverlayRenderer()
+        {
+            // Confirmed in headset testing: showing the edges ON TOP of the solid shaded surface
+            // read as confusing (looked like a decal, not a wireframe view) -- only the overlay's
+            // edges should actually be visible while this view is active.
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.ShowWireframe(target);
+
+            Assert.IsFalse(target.GetComponent<Renderer>().enabled);
+            var overlay = target.transform.Find("PipelineWireframe");
+            Assert.IsTrue(overlay.GetComponent<Renderer>().enabled);
+
+            spawner.ShowNormalRendering(target);
+
+            Assert.IsTrue(target.GetComponent<Renderer>().enabled);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void ShowUvMapping_AppliesCheckerTextureWithoutTiling()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.ShowUvMapping(target);
+
+            // ShowUvMapping assigns a brand-new material via the SETTER (renderer.material = ...),
+            // not the auto-instancing getter -- Unity's "already instanced, don't warn" tracking
+            // doesn't carry over across an external setter reassignment like that, so the next
+            // GETTER access here re-triggers the same warning as a first-ever access would.
+            ExpectMaterialInstantiateWarning();
+            var material = target.GetComponent<Renderer>().material;
+            Assert.AreEqual(ProceduralTextureFactory.GetOrCreateUvChecker(), material.GetTexture("_BaseMap"));
+            Assert.AreEqual(Vector2.one, material.GetTextureScale("_BaseMap"));
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void PipelineView_NeverPushesAnUndoEntry()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            spawner.ShowWireframe(target);
+            spawner.ShowUvMapping(target);
+
+            // Same reasoning as ShowUvMapping's own test above -- ShowUvMapping just reassigned
+            // the material via the setter, so ShowNormalRendering's internal getter access
+            // (inside ApplyColor) re-triggers the warning.
+            ExpectMaterialInstantiateWarning();
+            spawner.ShowNormalRendering(target);
+
+            // Nothing but the initial Spawn's own undo entry should exist -- one Undo() call
+            // should remove the spawned object itself, not unwind a pipeline-view step.
+            Assert.IsTrue(spawner.Undo());
+            Assert.IsTrue(target == null);
+
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void PipelineView_WithNullTarget_DoesNotThrow()
+        {
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            Assert.DoesNotThrow(() =>
+            {
+                spawner.ShowWireframe(null);
+                spawner.ShowUvMapping(null);
+                spawner.ShowNormalRendering(null);
+            });
+
+            Object.DestroyImmediate(go);
+        }
     }
 }

@@ -92,6 +92,8 @@ namespace ObjectSpawning
                 "  \"save the scene\" / \"load the scene\"\n" +
                 "  \"use the lamp from earlier\"\n" +
                 "  \"export this mesh\"\n" +
+                "  \"show the wireframe\" / \"show the UV map\"\n" +
+                "  \"show the final render\"\n" +
                 "  \"delete it\" / \"clear the room\"";
         }
     }

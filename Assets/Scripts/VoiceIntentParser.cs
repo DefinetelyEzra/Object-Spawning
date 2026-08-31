@@ -140,6 +140,14 @@ namespace ObjectSpawning
         // project -- DOES resolve a per-object target like Retexture/RerollStyle (there's no
         // mesh to export without one), unlike SaveScene/LoadScene above.
         ExportMesh,
+
+        // Rendering-pipeline viz: a teaching toggle for how the current object goes from raw
+        // geometry to a finished render -- resolves a per-object target like Retexture, but is
+        // purely a temporary visual overlay, never persisted or undoable (see
+        // PrimitiveSpawner.SetPipelineStage).
+        ShowWireframe,
+        ShowUvMapping,
+        ShowNormalRendering,
     }
 
     public readonly struct EditIntent
@@ -660,6 +668,66 @@ namespace ObjectSpawning
                 if (text.Contains(phrase))
                 {
                     intent = new EditIntent(EditAction.ExportMesh);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Rendering-pipeline viz: same plain-substring, no-overlap phrase matching as
+        // TryParseSaveLoad above -- a separate function only because these three map onto a
+        // per-object edit target (like retexture), not an early-exit "no target" action.
+        // "wire frame" (two words) included deliberately -- confirmed in headset testing that STT
+        // reliably transcribes "wireframe" as two separate words rather than the one-word form,
+        // and TranscriptAutocorrect can't fix this (it corrects individual mis-transcribed words
+        // against known vocabulary, but never merges two separate words into one).
+        static readonly string[] WireframePhrases =
+        {
+            "show the wireframe", "show wireframe", "show the wire frame", "show wire frame",
+            "show the edges", "show me the edges", "show the geometry", "show me the geometry",
+            "show me the vertices",
+        };
+        static readonly string[] UvMappingPhrases =
+        {
+            "show the uv", "show uv map", "show the uv map", "show the texture map",
+            "show how it's textured", "show the mapping", "show the checker",
+        };
+        static readonly string[] NormalRenderingPhrases =
+        {
+            "show the normal rendering", "show the final render", "show normal shading",
+            "hide the wireframe", "hide the uv", "reset the view", "show the real texture",
+            "show the actual texture",
+        };
+
+        public static bool TryParsePipelineView(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+            foreach (var phrase in WireframePhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.ShowWireframe);
+                    return true;
+                }
+            }
+            foreach (var phrase in UvMappingPhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.ShowUvMapping);
+                    return true;
+                }
+            }
+            foreach (var phrase in NormalRenderingPhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.ShowNormalRendering);
                     return true;
                 }
             }

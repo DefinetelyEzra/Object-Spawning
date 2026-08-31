@@ -544,6 +544,7 @@ namespace ObjectSpawning
             {
                 registry.Remove(info.Id);
                 visualState.Remove(info.Id);
+                wireframeOverlays.Remove(info.Id); // the overlay children die with go itself; just drop the stale dict entry
             }
 
             if (go == LastTouchedGameObject)
@@ -912,6 +913,208 @@ namespace ObjectSpawning
             return new Vector2(tiles, tiles);
         }
 
+        // Rendering-pipeline viz: a teaching toggle, not a real edit -- never touches visualState
+        // or the undo stack, since it's a temporary overlay on top of whatever the object's actual
+        // material already is, not a change to remember or revert. Deliberately scaled down from
+        // the original animated-sequence idea (custom wireframe/vertex shaders in single-pass-
+        // instanced VR is exactly the risk zone that already caused this project's black-material
+        // and glTFast Shader Graph bugs) to two static views built entirely from techniques already
+        // proven in this project: a real line-topology mesh drawn with the same Unlit shader
+        // ObjectMover's beam already uses (not a GL.wireframe fill-mode toggle, whose hardware
+        // support on mobile GPUs like Quest's is inconsistent), and a checker texture swapped in
+        // through the exact same material-instancing path Retexture already uses.
+        enum PipelineStage { Shaded, Wireframe, UvMapping }
+
+        static readonly Color PipelineWireframeColor = new(0.15f, 1f, 0.35f);
+
+        readonly Dictionary<int, List<GameObject>> wireframeOverlays = new();
+
+        public void ShowWireframe(GameObject target) => SetPipelineStage(target, PipelineStage.Wireframe);
+        public void ShowUvMapping(GameObject target) => SetPipelineStage(target, PipelineStage.UvMapping);
+        public void ShowNormalRendering(GameObject target) => SetPipelineStage(target, PipelineStage.Shaded);
+
+        void SetPipelineStage(GameObject target, PipelineStage stage)
+        {
+            if (target == null)
+                return;
+
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            var id = info != null ? info.Id : -1;
+
+            // Torn down unconditionally before applying the new stage, including when the new
+            // stage IS Wireframe again -- re-triggering the same view should rebuild cleanly, not
+            // stack a second overlay on top of the first. Also always starts from the base mesh's
+            // renderers back on, since Wireframe (below) turns them off.
+            ClearWireframeOverlay(id);
+            SetBaseRenderersEnabled(target, true);
+
+            switch (stage)
+            {
+                case PipelineStage.Shaded:
+                    ApplyVisualState(target, PriorVisualState(target));
+                    break;
+                case PipelineStage.UvMapping:
+                    ApplyPipelineTexture(target, ProceduralTextureFactory.GetOrCreateUvChecker());
+                    break;
+                case PipelineStage.Wireframe:
+                    // Confirmed in headset testing: showing the edges ON TOP of the solid shaded
+                    // surface read as confusing, not clarifying -- a real wireframe view hides the
+                    // solid surface entirely so only the edges are visible, same as every 3D
+                    // authoring tool's own wireframe shading mode. The real material is kept
+                    // current underneath (still needed once the base renderers come back on for
+                    // Shaded/UvMapping), just not rendered while this view is active.
+                    ApplyVisualState(target, PriorVisualState(target));
+                    BuildAndAttachWireframeOverlay(target, id);
+                    SetBaseRenderersEnabled(target, false);
+                    break;
+            }
+
+            LastTouchedGameObject = target;
+            Debug.Log($"[PrimitiveSpawner] Pipeline view for {target.name}: {stage}.");
+        }
+
+        // Toggles the object's OWN renderers (never a wireframe overlay's, which are excluded via
+        // PipelineWireframeMarker) -- Renderer.enabled rather than GameObject.SetActive, since the
+        // GameObject itself needs to stay active for its child overlay (parented onto the same
+        // MeshFilter transforms) to render at all.
+        static void SetBaseRenderersEnabled(GameObject target, bool isEnabled)
+        {
+            foreach (var renderer in target.GetComponentsInChildren<Renderer>())
+            {
+                if (renderer.GetComponent<PipelineWireframeMarker>() != null)
+                    continue;
+                renderer.enabled = isEnabled;
+            }
+        }
+
+        // Empty marker so SetBaseRenderersEnabled can tell a wireframe overlay's own renderer
+        // apart from the object's real ones without relying on GameObject name matching.
+        class PipelineWireframeMarker : MonoBehaviour { }
+
+        // Swaps in a texture-only material (no color tint, flat/unlit-feeling response) WITHOUT
+        // touching visualState -- purely a temporary look, never persisted or undoable, unlike
+        // Retexture's own ApplyRetextureCore which this deliberately does NOT call.
+        void ApplyPipelineTexture(GameObject target, Texture2D texture)
+        {
+            foreach (var renderer in target.GetComponentsInChildren<Renderer>())
+            {
+                var instance = baseMaterial != null ? Instantiate(baseMaterial) : new Material(renderer.sharedMaterial);
+                if (instance.HasProperty("_BaseMap"))
+                {
+                    instance.SetTexture("_BaseMap", texture);
+                    // Always 1:1 across the full 0-1 UV range, never the material-tiling repeat
+                    // ComputeDetailTiling computes -- the point is to reveal the object's actual
+                    // UV layout (including a generated mesh's own uneven or stretched unwrap),
+                    // which a tiled repeat would obscure.
+                    instance.SetTextureScale("_BaseMap", Vector2.one);
+                    instance.color = Color.white;
+                }
+                if (instance.HasProperty("_Metallic"))
+                    instance.SetFloat("_Metallic", 0f);
+                if (instance.HasProperty("_Smoothness"))
+                    instance.SetFloat("_Smoothness", 0.2f);
+
+                renderer.material = instance;
+            }
+        }
+
+        void ClearWireframeOverlay(int id)
+        {
+            if (wireframeOverlays.TryGetValue(id, out var overlays))
+            {
+                foreach (var go in overlays)
+                {
+                    if (go != null)
+                        DestroyObject(go);
+                }
+            }
+            wireframeOverlays.Remove(id);
+        }
+
+        // One line-topology overlay child per MeshFilter found under target, covering composite
+        // (multi-part) and generated (potentially multi-renderer) objects the same way Retexture's
+        // own GetComponentsInChildren<Renderer> loop already does. Each overlay is parented
+        // directly onto its source MeshFilter's own transform with an identity local transform --
+        // since the wireframe mesh reuses that MeshFilter's own vertex positions (already in its
+        // local space), this makes the overlay inherit an exactly matching world transform for
+        // free, with no manual position/rotation/lossyScale math that could get a nested
+        // composite/generated part's transform subtly wrong.
+        void BuildAndAttachWireframeOverlay(GameObject target, int id)
+        {
+            var wireShader = Shader.Find("Universal Render Pipeline/Unlit");
+            Material wireMaterial = null;
+            if (wireShader != null)
+            {
+                wireMaterial = new Material(wireShader) { color = PipelineWireframeColor, enableInstancing = true };
+            }
+            else
+            {
+                Debug.LogWarning("[PrimitiveSpawner] Universal Render Pipeline/Unlit shader not found -- wireframe overlay will have no material.");
+            }
+
+            var overlays = new List<GameObject>();
+            foreach (var meshFilter in target.GetComponentsInChildren<MeshFilter>())
+            {
+                if (meshFilter.sharedMesh == null)
+                    continue;
+
+                var edgeGO = new GameObject("PipelineWireframe");
+                edgeGO.transform.SetParent(meshFilter.transform, false);
+
+                var edgeFilter = edgeGO.AddComponent<MeshFilter>();
+                edgeFilter.sharedMesh = BuildWireframeMesh(meshFilter.sharedMesh);
+
+                var edgeRenderer = edgeGO.AddComponent<MeshRenderer>();
+                if (wireMaterial != null)
+                    edgeRenderer.sharedMaterial = wireMaterial;
+                edgeRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                edgeRenderer.receiveShadows = false;
+                edgeGO.AddComponent<PipelineWireframeMarker>();
+
+                overlays.Add(edgeGO);
+            }
+
+            wireframeOverlays[id] = overlays;
+        }
+
+        // Every unique triangle edge (deduped by unordered vertex-index pair, so a shared edge
+        // between two triangles only draws once), reusing the source mesh's own vertex positions
+        // directly rather than authoring new ones -- correct regardless of the source mesh's own
+        // topology, including an arbitrary generated mesh.
+        static Mesh BuildWireframeMesh(Mesh source)
+        {
+            var vertices = source.vertices;
+            var triangles = source.triangles;
+            var seenEdges = new HashSet<long>();
+            var edgeIndices = new List<int>(triangles.Length * 2);
+
+            void AddEdge(int a, int b)
+            {
+                var lo = Mathf.Min(a, b);
+                var hi = Mathf.Max(a, b);
+                var key = ((long)lo << 32) | (uint)hi;
+                if (seenEdges.Add(key))
+                {
+                    edgeIndices.Add(a);
+                    edgeIndices.Add(b);
+                }
+            }
+
+            for (var i = 0; i < triangles.Length; i += 3)
+            {
+                AddEdge(triangles[i], triangles[i + 1]);
+                AddEdge(triangles[i + 1], triangles[i + 2]);
+                AddEdge(triangles[i + 2], triangles[i]);
+            }
+
+            var mesh = new Mesh { name = source.name + "_Wireframe" };
+            if (vertices.Length > 65535)
+                mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.vertices = vertices;
+            mesh.SetIndices(edgeIndices.ToArray(), MeshTopology.Lines, 0);
+            return mesh;
+        }
+
         // Stage "advanced instructions": distanceMeters+direction ("move it 3 meters to the
         // left") is an alternative to relation-based placement, not a combination -- when both
         // are given, the distance/direction move wins. With neither, relation/referenceShape
@@ -1144,6 +1347,7 @@ namespace ObjectSpawning
             hiddenForUndo.Clear();
             undoStack.Clear();
             visualState.Clear();
+            wireframeOverlays.Clear(); // overlay children were destroyed above along with their owning objects
 
             LastTouchedGameObject = null;
             SpawnCount = 0;

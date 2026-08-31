@@ -188,6 +188,16 @@ CASES = [
     ("export this mesh", "export_mesh", None, None, None, None, None, None, False, None),
     ("save this model as a file", "export_mesh", None, None, None, None, None, None, False, None),
     ("save this mesh so I can use it in Blender", "export_mesh", None, None, None, None, None, None, False, None),
+    # Rendering-pipeline viz follow-up: a teaching toggle, not a real edit -- must not be
+    # confused with retexture/recolor.
+    ("show the wireframe", "show_wireframe", None, None, None, None, None, None, False, None),
+    # STT reliably splits "wireframe" into two words in headset testing -- must still resolve.
+    ("show the wire frame", "show_wireframe", None, None, None, None, None, None, False, None),
+    ("show me the edges", "show_wireframe", None, None, None, None, None, None, False, None),
+    ("show the UV map", "show_uv_mapping", None, None, None, None, None, None, False, None),
+    ("show how it's textured", "show_uv_mapping", None, None, None, None, None, None, False, None),
+    ("show the final render", "show_normal_rendering", None, None, None, None, None, None, False, None),
+    ("hide the wireframe", "show_normal_rendering", None, None, None, None, None, None, False, None),
 ]
 
 

@@ -255,5 +255,32 @@ namespace ObjectSpawning.Tests
             Assert.IsNull(intent.Relation);
             Assert.IsNull(intent.ReferenceShape);
         }
+
+        // "wire frame" (two words) is a regression case, not a nice-to-have: confirmed in headset
+        // testing that STT reliably transcribes "wireframe" as two separate words, which silently
+        // failed to match every phrase in WireframePhrases (all one-word "wireframe") across three
+        // separate attempts before this was fixed.
+        [TestCase("show the wireframe", EditAction.ShowWireframe)]
+        [TestCase("show the wire frame", EditAction.ShowWireframe)]
+        [TestCase("show me the edges", EditAction.ShowWireframe)]
+        [TestCase("show the uv map", EditAction.ShowUvMapping)]
+        [TestCase("show how it's textured", EditAction.ShowUvMapping)]
+        [TestCase("show the final render", EditAction.ShowNormalRendering)]
+        [TestCase("hide the wireframe", EditAction.ShowNormalRendering)]
+        public void TryParsePipelineView_RecognizesPhrase(string transcript, EditAction expectedAction)
+        {
+            var ok = VoiceIntentParser.TryParsePipelineView(transcript, out var intent);
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual(expectedAction, intent.Action);
+        }
+
+        [Test]
+        public void TryParsePipelineView_NoMatch_ReturnsFalse()
+        {
+            var ok = VoiceIntentParser.TryParsePipelineView("spawn a red cube", out _);
+
+            Assert.IsFalse(ok);
+        }
     }
 }

@@ -51,6 +51,13 @@ library and local mesh cache, this endpoint only has to tell the two apart. expo
 third no-extra-field action alongside save_scene/load_scene, but edits one specific object
 (like retexture) rather than the whole room -- it hands that object's original mesh file out
 of the app's private storage for use in Blender or another project.
+
+A rendering-pipeline viz follow-up adds show_wireframe/show_uv_mapping/show_normal_rendering --
+a teaching toggle for how the current object is rendered, deliberately built without any new
+shader work (a real line-topology mesh and a checker texture swap, both reusing techniques
+already proven elsewhere in this project) after the original animated-sequence version of this
+idea was judged too shader-risky to build safely. These three edit a specific object like
+retexture does; this endpoint just has to recognize the phrase and tell the three views apart.
 """
 import logging
 import os
@@ -106,7 +113,8 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                 type="STRING",
                 enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
                       "delete", "clear", "retexture", "adjust_lighting", "undo", "reroll_style",
-                      "recall_asset", "save_scene", "load_scene", "export_mesh"],
+                      "recall_asset", "save_scene", "load_scene", "export_mesh",
+                      "show_wireframe", "show_uv_mapping", "show_normal_rendering"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
@@ -144,8 +152,18 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "this model as a file') -- ONLY for that, edits a specific object "
                              "(resolved elsewhere, same as retexture/reroll_style) and takes no "
                              "other fields; do not confuse with save_scene, which persists the "
-                             "whole room's layout, not a single mesh file. Default to 'create' if "
-                             "omitted.",
+                             "whole room's layout, not a single mesh file. "
+                             "'show_wireframe'/'show_uv_mapping'/'show_normal_rendering' are a "
+                             "teaching toggle for how the current object is rendered -- "
+                             "show_wireframe for 'show the wireframe'/'show the wire frame' (speech-"
+                             "to-text commonly splits 'wireframe' into two words -- treat 'wire "
+                             "frame' as the same word)/'show the edges'/'show the geometry', "
+                             "show_uv_mapping for 'show the UV map'/'show how it's "
+                             "textured'/'show the texture mapping', show_normal_rendering for "
+                             "'show the final render'/'show normal shading'/'hide the wireframe'/"
+                             "'reset the view' (back to the object's actual current look). All "
+                             "three edit a specific object (resolved elsewhere) and take no other "
+                             "fields. Default to 'create' if omitted.",
             ),
             "shape": types.Schema(
                 type="STRING",
@@ -416,9 +434,20 @@ SYSTEM_PROMPT = (
     "use it in Blender' (getting the current object's own mesh file out of the app), set "
     "action=export_mesh and no other fields -- this edits one specific object, not the whole room, "
     "so don't confuse it with save_scene.\n"
+    "For a teaching request to see HOW the current object is rendered rather than to actually "
+    "change it: 'show the wireframe'/'show the wire frame' (STT often splits 'wireframe' into two "
+    "words -- always treat it the same as one)/'show the edges'/'show the geometry' -> "
+    "action=show_wireframe; "
+    "'show the UV map'/'show how it's textured'/'show the texture mapping' -> "
+    "action=show_uv_mapping; 'show the final render'/'show normal shading'/'hide the wireframe'/"
+    "'reset the view'/'show the real texture' (going back to how it actually looks) -> "
+    "action=show_normal_rendering. All three take no other fields and edit whatever object is "
+    "currently targeted, same as retexture -- these are a temporary viewing toggle, never a real "
+    "change to the object, so don't confuse them with retexture/recolor.\n"
     "If the transcript doesn't describe either a create, generate, edit, clear, retexture, "
-    "adjust_lighting, undo, reroll_style, recall_asset, save_scene, load_scene, or export_mesh "
-    "command, set recognized to false and omit the other fields."
+    "adjust_lighting, undo, reroll_style, recall_asset, save_scene, load_scene, export_mesh, "
+    "show_wireframe, show_uv_mapping, or show_normal_rendering command, set recognized to false "
+    "and omit the other fields."
 )
 
 

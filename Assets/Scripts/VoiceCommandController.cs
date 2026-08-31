@@ -301,6 +301,13 @@ namespace ObjectSpawning
                 return;
             }
 
+            // Rendering-pipeline viz: same reasoning as the save/load check above.
+            if (VoiceIntentParser.TryParsePipelineView(transcript, out var pipelineIntent))
+            {
+                ApplyEdit(pipelineIntent);
+                return;
+            }
+
             // It only ever matches when an explicit scene-referring word is present ("room"/
             // "lighting"/"ambiance"/...), so it can never collide with a normal per-object edit --
             // but it DOES need to win over the generic
@@ -419,6 +426,9 @@ namespace ObjectSpawning
                     break;
                 case EditAction.RerollStyle: spawner.RerollStyle(target); break;
                 case EditAction.ExportMesh: spawner.ExportMesh(target); break;
+                case EditAction.ShowWireframe: spawner.ShowWireframe(target); break;
+                case EditAction.ShowUvMapping: spawner.ShowUvMapping(target); break;
+                case EditAction.ShowNormalRendering: spawner.ShowNormalRendering(target); break;
             }
         }
     }

@@ -31,6 +31,36 @@ namespace ObjectSpawning
             return texture;
         }
 
+        static Texture2D uvCheckerCache;
+
+        // Rendering-pipeline viz follow-up: a classic light/blue checker grid at exactly 8x8
+        // cells across the full 0-1 UV range (never the material-tiling repeat every other
+        // texture here uses) -- showing the RAW UV layout is the whole point, including a
+        // generated mesh's own uneven or stretched unwrap, which a tiled pattern would hide.
+        public static Texture2D GetOrCreateUvChecker()
+        {
+            if (uvCheckerCache != null)
+                return uvCheckerCache;
+
+            const int checks = 8;
+            var cellSize = Size / checks;
+            var pixels = new Color32[Size * Size];
+            var light = new Color32(235, 235, 235, 255);
+            var blue = new Color32(35, 110, 225, 255);
+
+            for (var y = 0; y < Size; y++)
+            {
+                for (var x = 0; x < Size; x++)
+                {
+                    var isEven = ((x / cellSize) + (y / cellSize)) % 2 == 0;
+                    pixels[y * Size + x] = isEven ? light : blue;
+                }
+            }
+
+            uvCheckerCache = BuildTexture(pixels);
+            return uvCheckerCache;
+        }
+
         // null means "no detail pattern for this material" -- gold/chrome/metal/plastic/rubber
         // are genuinely supposed to look smooth and uniform in reality, so the flat base color
         // Retexture already applies is correct for them, not a gap that needs filling.
