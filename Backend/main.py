@@ -114,7 +114,8 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                 enum=["create", "generate", "resize", "recolor", "move", "rotate", "duplicate",
                       "delete", "clear", "retexture", "adjust_lighting", "undo", "reroll_style",
                       "recall_asset", "save_scene", "load_scene", "export_mesh",
-                      "show_wireframe", "show_uv_mapping", "show_normal_rendering"],
+                      "show_wireframe", "show_uv_mapping", "show_normal_rendering",
+                      "reset_orientation"],
                 description="What to do. 'create' spawns a new object from the fixed shape "
                              "library -- set shape (and optionally color/size). 'generate' "
                              "requests a real generated 3D mesh for something that ISN'T in the "
@@ -163,7 +164,13 @@ COMMAND_FUNCTION = types.FunctionDeclaration(
                              "'show the final render'/'show normal shading'/'hide the wireframe'/"
                              "'reset the view' (back to the object's actual current look). All "
                              "three edit a specific object (resolved elsewhere) and take no other "
-                             "fields. Default to 'create' if omitted.",
+                             "fields. 'reset_orientation' straightens the current object upright "
+                             "and turns it to face the player -- 'reset its orientation', 'make it "
+                             "upright', 'straighten it out', 'flip it right side up', 'face me' -- "
+                             "also edits a specific object and takes no other fields; distinct from "
+                             "action=rotate, which spins the object by a given amount rather than "
+                             "resetting it to a known upright/facing-player orientation. Default to "
+                             "'create' if omitted.",
             ),
             "shape": types.Schema(
                 type="STRING",
@@ -444,10 +451,16 @@ SYSTEM_PROMPT = (
     "action=show_normal_rendering. All three take no other fields and edit whatever object is "
     "currently targeted, same as retexture -- these are a temporary viewing toggle, never a real "
     "change to the object, so don't confuse them with retexture/recolor.\n"
+    "For 'reset its orientation', 'reset the rotation', 'make it upright', 'straighten it out', "
+    "'flip it right side up', 'turn it to face me', 'face me' (straightening the current object "
+    "upright and turning it toward the player, e.g. after it landed on its side or at an angle), "
+    "set action=reset_orientation and no other fields -- distinct from action=rotate, which spins "
+    "the object by some given or default amount rather than resetting it to a specific known "
+    "orientation.\n"
     "If the transcript doesn't describe either a create, generate, edit, clear, retexture, "
     "adjust_lighting, undo, reroll_style, recall_asset, save_scene, load_scene, export_mesh, "
-    "show_wireframe, show_uv_mapping, or show_normal_rendering command, set recognized to false "
-    "and omit the other fields."
+    "show_wireframe, show_uv_mapping, show_normal_rendering, or reset_orientation command, set "
+    "recognized to false and omit the other fields."
 )
 
 

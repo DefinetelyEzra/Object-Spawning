@@ -7,12 +7,15 @@ using UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning;
 namespace ObjectSpawning
 {
     // Ray-grab: hold the right controller's grip to pick up whatever the beam is pointing at
-    // and carry it by aiming, rotate it in fixed steps via the A/X face buttons, then release
-    // to drop it snapped solidly to the floor. Fully kinematic/transform-driven throughout --
-    // matches every other placement path in this project (ComputeOnGroundPosition etc.), no
-    // physics/Rigidbody involved -- and reuses PrimitiveSpawner's registry tag
-    // (SpawnedObjectInfo) the same way ObjectSelector does, so only legitimately spawned
-    // objects are grabbable, never the floor/walls/rig itself.
+    // and carry it by aiming, rotate it in fixed steps via the right-hand A button or straighten
+    // it back out (upright, facing the player) via the left-hand X button, then release to drop
+    // it. While held, the object is kinematic and follows the beam directly (frozen via
+    // PrimitiveSpawner.FreezePhysics right when it's grabbed, in case it was still mid-settle from
+    // something else); on release, PrimitiveSpawner.SettleObject hands it to real physics so it
+    // falls and collides with whatever's actually below it -- the floor, or another object,
+    // enabling real stacking -- then locks back to kinematic once it comes to rest. Reuses
+    // PrimitiveSpawner's registry tag (SpawnedObjectInfo) the same way ObjectSelector does, so
+    // only legitimately spawned objects are grabbable, never the floor/walls/rig itself.
     public class ObjectMover : MonoBehaviour
     {
         [SerializeField] Transform pointerOrigin;
@@ -27,7 +30,7 @@ namespace ObjectSpawning
 
         InputAction grabAction;
         InputAction rotateClockwiseAction;
-        InputAction rotateCounterclockwiseAction;
+        InputAction resetOrientationAction;
         LineRenderer lineRenderer;
 
         GameObject heldObject;
@@ -65,11 +68,14 @@ namespace ObjectSpawning
             // angles" rotation the roadmap asked for, with no continuous-drag case to debounce.
             rotateClockwiseAction = new InputAction(name: "RotateHeldObjectClockwise", type: InputActionType.Button);
             rotateClockwiseAction.AddBinding("<XRController>{RightHand}/primaryButton"); // A
-            rotateCounterclockwiseAction = new InputAction(name: "RotateHeldObjectCounterclockwise", type: InputActionType.Button);
-            rotateCounterclockwiseAction.AddBinding("<XRController>{LeftHand}/primaryButton"); // X
+            // Originally counterclockwise rotation -- repurposed into a reset button (upright,
+            // facing the player) instead, since physics settling can now leave a held object at an
+            // arbitrary angle that a single fixed-step rotation can't reliably recover in one press.
+            resetOrientationAction = new InputAction(name: "ResetHeldObjectOrientation", type: InputActionType.Button);
+            resetOrientationAction.AddBinding("<XRController>{LeftHand}/primaryButton"); // X
 
             rotateClockwiseAction.performed += _ => RotateHeld(rotateStepDegrees);
-            rotateCounterclockwiseAction.performed += _ => RotateHeld(-rotateStepDegrees);
+            resetOrientationAction.performed += _ => ResetHeldOrientation();
 
             lineRenderer = gameObject.AddComponent<LineRenderer>();
             lineRenderer.positionCount = 2;
@@ -87,14 +93,14 @@ namespace ObjectSpawning
         {
             grabAction.Enable();
             rotateClockwiseAction.Enable();
-            rotateCounterclockwiseAction.Enable();
+            resetOrientationAction.Enable();
         }
 
         void OnDisable()
         {
             grabAction.Disable();
             rotateClockwiseAction.Disable();
-            rotateCounterclockwiseAction.Disable();
+            resetOrientationAction.Disable();
             if (lineRenderer != null)
                 lineRenderer.enabled = false;
         }
@@ -146,6 +152,11 @@ namespace ObjectSpawning
                     heldObject = info.gameObject;
                     holdDistance = hit.distance;
                     primitiveSpawner?.MarkAsTouched(heldObject);
+                    // Guards against grabbing something that's still mid-settle (e.g. a fast
+                    // regrab right after release, or grabbing an object another one just landed
+                    // near) -- without this, physics would fight the direct position control below
+                    // for the rest of this settle's remaining lifetime.
+                    primitiveSpawner?.FreezePhysics(heldObject);
                     SetConflictingLocomotionSuppressed(true);
                     Debug.Log($"[ObjectMover] Grabbed {heldObject.name} at distance {holdDistance:0.##}m.");
                 }
@@ -159,13 +170,13 @@ namespace ObjectSpawning
 
         void EndGrab()
         {
-            // Snapped to the floor on every release, not just when it happens to already be
-            // near one -- "sticky to the ground" per the roadmap ask, so a guest can never leave
-            // an object floating mid-air or clipped through the floor by releasing early/late.
-            Debug.Log($"[ObjectMover] Released {heldObject.name} at {heldObject.transform.position}, snapping to ground.");
-            primitiveSpawner?.SnapToGround(heldObject);
+            // Released to real physics on every release -- falls and collides with whatever's
+            // actually below it (the floor, or another object -- this is what makes stacking one
+            // object on another via ray-grab possible at all) rather than always being forced back
+            // down to the floor regardless of what it was dropped onto.
+            Debug.Log($"[ObjectMover] Released {heldObject.name} at {heldObject.transform.position}, settling.");
+            primitiveSpawner?.SettleObject(heldObject);
             primitiveSpawner?.MarkAsTouched(heldObject);
-            Debug.Log($"[ObjectMover] {heldObject.name} landed at {heldObject.transform.position}.");
             SetConflictingLocomotionSuppressed(false);
             heldObject = null;
         }
@@ -177,6 +188,16 @@ namespace ObjectSpawning
             heldObject.transform.Rotate(Vector3.up, degrees, Space.World);
             Debug.Log($"[ObjectMover] Rotated {heldObject.name} by {degrees:0.##} degrees " +
                 $"(now facing {heldObject.transform.eulerAngles.y:0.#}°).");
+        }
+
+        // Routed through PrimitiveSpawner (unlike RotateHeld's own direct transform.Rotate above)
+        // so this gets the same undo support every other edit already has -- a mis-press doesn't
+        // strand the object at a worse angle than before with no way back.
+        void ResetHeldOrientation()
+        {
+            if (heldObject == null)
+                return;
+            primitiveSpawner?.ResetOrientation(heldObject);
         }
 
         void SetConflictingLocomotionSuppressed(bool suppressed)

@@ -317,6 +317,53 @@ namespace ObjectSpawning.Tests
         }
 
         [Test]
+        public void ResetOrientation_StraightensATiltedObjectAndIsUndoable()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            target.transform.rotation = Quaternion.Euler(45f, 30f, 60f); // tilted on every axis
+            var priorRotation = target.transform.rotation;
+
+            spawner.ResetOrientation(target);
+
+            // Robust to euler-angle wraparound quirks (359.999 vs 0) -- an object with zero
+            // pitch/roll always has its local up aligned with world up, regardless of yaw.
+            Assert.Greater(Vector3.Dot(target.transform.up, Vector3.up), 0.999f,
+                "Object should be upright (zero pitch/roll) after resetting orientation.");
+
+            spawner.Undo();
+            Assert.AreEqual(priorRotation, target.transform.rotation);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Delete_ObjectWithNeighborRestingOnIt_DoesNotThrow()
+        {
+            // The actual "does the neighbor fall" behavior only happens in Play Mode (Edit Mode
+            // has no physics timestep to drive SettleObject's coroutine), so this only smoke-tests
+            // that ReleaseUnsupportedObjects' Physics.OverlapBox-based scan runs cleanly against a
+            // real stacked pair -- the fall itself is confirmed in-headset.
+            var go = new GameObject("TestSpawner");
+            var spawner = go.AddComponent<PrimitiveSpawner>();
+
+            ExpectMaterialInstantiateWarning();
+            var bottom = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, 1f));
+            ExpectMaterialInstantiateWarning();
+            var top = spawner.Spawn(new SpawnIntent(PrimitiveShape.Cube, Color.white, 0.2f));
+
+            var bottomBounds = bottom.GetComponent<Renderer>().bounds;
+            var topExtents = top.GetComponent<Renderer>().bounds.extents;
+            top.transform.position = new Vector3(bottomBounds.center.x,
+                bottomBounds.max.y + topExtents.y, bottomBounds.center.z);
+
+            Assert.DoesNotThrow(() => spawner.Delete(bottom));
+
+            Object.DestroyImmediate(top);
+            Object.DestroyImmediate(go);
+        }
+
+        [Test]
         public void Spawn_WithOnRelation_PlacesOnTopOfReference()
         {
             var go = new GameObject("TestSpawner");
@@ -540,6 +587,9 @@ namespace ObjectSpawning.Tests
                 spawner.Retexture(null, MaterialNaming.All[0]);
                 spawner.RerollStyle(null);
                 spawner.ExportMesh(null);
+                spawner.FreezePhysics(null);
+                spawner.SettleObject(null);
+                spawner.ResetOrientation(null);
             });
 
             Assert.DoesNotThrow(() => spawner.Undo());
@@ -936,6 +986,71 @@ namespace ObjectSpawning.Tests
 
             Object.DestroyImmediate(target);
             Object.DestroyImmediate(go);
+        }
+
+        [Test]
+        public void Spawn_AddsKinematicGravityRigidbody()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            Assert.IsTrue(target.TryGetComponent<Rigidbody>(out var rb));
+            Assert.IsTrue(rb.isKinematic, "Objects should be kinematic/frozen at rest, not continuously live physics.");
+            Assert.IsTrue(rb.useGravity);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void Duplicate_CopyAlsoHasExactlyOneKinematicRigidbody()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            ExpectMaterialInstantiateWarning();
+            var copy = spawner.Duplicate(target);
+
+            // Instantiate() clones the source's Rigidbody along with everything else -- AddPhysics
+            // must re-assert settings on it via TryGetComponent, not try to add a second one
+            // (Unity only allows one Rigidbody per GameObject).
+            Assert.AreEqual(1, copy.GetComponents<Rigidbody>().Length);
+            Assert.IsTrue(copy.GetComponent<Rigidbody>().isKinematic);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(copy);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void SettleObject_InEditMode_DoesNotThrowOrLeavePhysicsRunning()
+        {
+            // Edit Mode never runs a physics timestep to drive the settle coroutine forward, so
+            // SettleObject should just no-op rather than starting something that can never
+            // complete and leaving the Rigidbody stuck non-kinematic.
+            var (spawnerGO, spawner, target) = SpawnOne();
+
+            Assert.DoesNotThrow(() => spawner.SettleObject(target));
+
+            Assert.IsTrue(target.GetComponent<Rigidbody>().isKinematic);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
+        }
+
+        [Test]
+        public void FreezePhysics_ZeroesVelocityAndForcesKinematic()
+        {
+            var (spawnerGO, spawner, target) = SpawnOne();
+            var rb = target.GetComponent<Rigidbody>();
+            rb.isKinematic = false;
+            rb.linearVelocity = new Vector3(1f, 2f, 3f);
+
+            spawner.FreezePhysics(target);
+
+            Assert.IsTrue(rb.isKinematic);
+            Assert.AreEqual(Vector3.zero, rb.linearVelocity);
+
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(spawnerGO);
         }
 
         [Test]

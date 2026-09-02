@@ -79,12 +79,13 @@ namespace ObjectSpawning
                 "LEFT HAND\n" +
                 "  Trigger  -  Hold to talk (voice command)\n" +
                 "  Y Button  -  Show / hide this help\n" +
-                "  X Button  -  While grabbing, rotate -45°\n\n" +
+                "  X Button  -  While grabbing, reset upright + face you\n\n" +
                 "Try saying:\n" +
                 "  \"spawn a red sphere\" / \"spawn a sofa\"\n" +
                 "  \"make it bigger\" / \"make it 10 times bigger\"\n" +
                 "  \"move it 3 meters to the left\"\n" +
                 "  \"rotate it 180 degrees\"\n" +
+                "  \"reset its orientation\" / \"face me\"\n" +
                 "  \"move it onto the table\"\n" +
                 "  \"make it look like rusted metal\" / \"make it glass\"\n" +
                 "  \"spawn a light\" / \"make the room brighter\"\n" +

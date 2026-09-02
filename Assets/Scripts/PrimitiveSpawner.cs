@@ -100,11 +100,13 @@ namespace ObjectSpawning
 
         // Stage 10: set for the duration of LoadScene's restore loop -- a restored object's final
         // transform (including scale) is applied synchronously right after Spawn/SpawnGenerating
-        // return, which would otherwise race against the pop-in animation those already start
-        // (it captures ITS OWN target scale at call time and keeps overwriting localScale for the
-        // next quarter second, fighting the value LoadScene just set). Restored objects should
-        // just appear already in place, not visibly pop in anyway.
-        bool suppressSpawnAnimation;
+        // return, which would otherwise race against two things those already start: the pop-in
+        // animation (captures ITS OWN target scale at call time and keeps overwriting localScale
+        // for the next quarter second, fighting the value LoadScene just set) and physics settling
+        // (would let gravity nudge a restored object away from its exact saved transform). A
+        // restored object should just appear already in place, exactly as saved, not visibly pop
+        // in or drift.
+        bool suppressSpawnEffects;
 
         void PushUndo(string description, System.Action revert, System.Action onEvicted = null)
         {
@@ -231,16 +233,33 @@ namespace ObjectSpawning
             ApplyColor(go, intent.Color);
             var id = Register(go, intent.Shape);
             visualState[id] = new VisualState(intent.Color, null);
+            AddPhysics(go);
 
             SpawnCount++;
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Spawned {intent.Shape} #{SpawnCount} at {position}");
-            if (!suppressSpawnAnimation)
-                StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            if (!suppressSpawnEffects)
+                StartCoroutine(AnimateThenSettle(go));
             PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
             return go;
+        }
+
+        // Settling is chained to start only AFTER the pop-in animation finishes, never
+        // simultaneously with it -- physics engages a moment too early, while AnimateScaleIn still
+        // has the object's collider scaled down near zero, and a fast-falling tiny collider can
+        // tunnel straight through the floor before anyone ever sees it land. A kinematic Rigidbody
+        // (the state every object is in before this runs) doesn't respond to gravity at all, so
+        // there's no such risk during the animation itself -- only once it's actually released to
+        // physics, which is exactly what this delays.
+        IEnumerator AnimateThenSettle(GameObject go)
+        {
+            if (go == null)
+                yield break;
+            yield return AnimateScaleIn(go.transform, go.transform.localScale);
+            if (go != null)
+                SettleObject(go);
         }
 
         // Stage 6: spawns an immediately-visible placeholder (a plain gray cube -- same
@@ -260,14 +279,15 @@ namespace ObjectSpawning
             var id = Register(go, PrimitiveShape.Generated);
             visualState[id] = new VisualState(GeneratingPlaceholderColor, null);
             go.GetComponent<SpawnedObjectInfo>().GeneratedPrompt = prompt;
+            AddPhysics(go);
 
             SpawnCount++;
             LastSpawnPosition = position;
             LastTouchedGameObject = go;
             objectSelector?.ClearSelection();
             Debug.Log($"[PrimitiveSpawner] Generating placeholder spawned for prompt=\"{prompt}\".");
-            if (!suppressSpawnAnimation)
-                StartCoroutine(AnimateScaleIn(go.transform, go.transform.localScale));
+            if (!suppressSpawnEffects)
+                StartCoroutine(AnimateThenSettle(go));
             PushUndo($"spawn {go.name}", () => DestroyRegistered(go));
 
             // Stage 10: a cache hit skips Tripo3D entirely -- works even without a
@@ -494,7 +514,7 @@ namespace ObjectSpawning
 
             // Collider above is already sized to the mesh's true final bounds, so selection/
             // interaction works immediately -- only the visual scale animates in.
-            if (!suppressSpawnAnimation)
+            if (!suppressSpawnEffects)
                 StartCoroutine(AnimateScaleIn(importedRoot.transform, importedRoot.transform.localScale));
         }
 
@@ -553,6 +573,247 @@ namespace ObjectSpawning
 
             Debug.Log($"[PrimitiveSpawner] Undo removed {go.name}.");
             DestroyObject(go);
+            ReleaseUnsupportedObjects(); // anything that was resting on go is now floating
+        }
+
+        // Collision follow-up: every spawned object gets a real Rigidbody so it can fall and
+        // collide with the floor, walls, and each other (enabling real stacking) instead of only
+        // ever teleporting to a bounds-math position -- but stays kinematic (frozen, transform-
+        // driven) the rest of the time, per the "settle then freeze" design: physics only runs for
+        // the brief window right after a spawn/move/grab-release while the object drops the last
+        // short distance and comes to rest, then locks back down. A continuously-live physics room
+        // risked slow drift/jitter and stacks toppling on their own over a long exhibition-style
+        // session, and would have meant every existing feature that assumes an object stays
+        // exactly where it was put (undo's captured transforms, save/load, ray-grab's own position
+        // tracking) needing to account for physics moving it at any moment.
+        //
+        // TryGetComponent-guarded rather than a bare AddComponent: Duplicate() clones the whole
+        // source GameObject via Instantiate, which already copies its Rigidbody along with
+        // everything else -- Unity only allows one Rigidbody per GameObject, so this just
+        // re-asserts the correct settings on an already-cloned one instead of erroring.
+        static void AddPhysics(GameObject go)
+        {
+            if (!go.TryGetComponent<Rigidbody>(out var rb))
+                rb = go.AddComponent<Rigidbody>();
+
+            rb.isKinematic = true;
+            rb.useGravity = true;
+            // Interpolation is only ever turned on for the duration of an actual physics settle
+            // (see SettleThenFreeze) -- left on permanently, it fights every direct
+            // transform.position/rotation set made while kinematic (ray-grab's own per-frame hold
+            // and rotate included), since interpolation is designed around Rigidbody-driven
+            // movement between fixed-timestep physics steps, not a plain Update-loop transform
+            // assignment. Confirmed in headset testing: this mismatch is exactly what caused
+            // held-object rotation to blink in place instead of rotating smoothly.
+            rb.interpolation = RigidbodyInterpolation.None;
+            // Small, sometimes-fast-falling objects in a small room -- continuous detection is
+            // cheap at this scale and rules out tunneling through the floor/a stacked object
+            // between physics steps entirely, rather than trusting discrete detection to catch it.
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            // Every rotation path in this app (voice "rotate it", ray-grab's own rotate button)
+            // only ever turns an object around world-up -- real physics tumbling it onto its side
+            // was never part of the interaction model, and confirmed in headset testing as the
+            // actual cause of "spinning wildly" when a moved object struck another one (an
+            // unconstrained Rigidbody imparts real angular velocity from an off-center collision,
+            // same as any physics object would). Constraining rotation to Y keeps the settle
+            // physically real for position/stacking while ruling that out entirely.
+            rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+        }
+
+        // Forces an object back to its resting kinematic state immediately, zeroing out any
+        // leftover velocity first -- called before every direct transform.position/rotation set
+        // outside of SettleThenFreeze itself (Move, Rotate, undo reverts, ray-grab's own per-frame
+        // hold and grab-start) so that set can never be fought by an in-progress settle a fast
+        // sequence of commands happened to catch mid-fall. Safe to call on an object that's
+        // already kinematic (a no-op) or has no Rigidbody at all (nothing to do).
+        public void FreezePhysics(GameObject target)
+        {
+            if (target == null)
+                return;
+            if (!target.TryGetComponent<Rigidbody>(out var rb))
+                return;
+
+            // Unity logs a warning (and no-ops) setting velocity on a body that's ALREADY
+            // kinematic -- true almost every time this is called, since it exists to guarantee a
+            // clean state before a direct transform set on an object that's normally at rest.
+            // Only meaningful (and only actually needed) while a real settle might still be live.
+            if (!rb.isKinematic)
+            {
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+            rb.isKinematic = true;
+            // Interpolation is only meant to be on during an actual settle (see SettleThenFreeze)
+            // -- forced off here too, not just at rest, since this is exactly the guard called
+            // right before every direct transform set, which is what interpolation fights.
+            rb.interpolation = RigidbodyInterpolation.None;
+        }
+
+        // Keyed by SpawnedObjectInfo.Id, same as every other per-object dictionary in this file
+        // (visualState, wireframeOverlays, ...) -- every object this is ever called on already has
+        // one (Register adds it at spawn time, before anything could call SettleObject on it).
+        readonly Dictionary<int, Coroutine> activeSettles = new();
+
+        // Releases target to real physics so it falls/collides/settles onto whatever's actually
+        // below it -- the floor, or another object, enabling real stacking -- then locks it back
+        // to kinematic once it comes to rest. Safe to call repeatedly (e.g. a second grab-release
+        // shortly after the first, or ReleaseUnsupportedObjects re-triggering on the same object) --
+        // stops any settle already in flight for this exact object first, so at most one is ever
+        // running on it at a time; two overlapping settles racing to freeze/unfreeze the same
+        // Rigidbody was a real source of a later direct position set (Move, Rotate, ...) getting
+        // silently undone shortly after it happened.
+        public void SettleObject(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            // Edit Mode (including every EditMode test) never runs a physics timestep, so a
+            // coroutine-based settle would start, execute the two synchronous lines before its
+            // first yield (isKinematic = false), then never advance any further -- leaving the
+            // Rigidbody stuck non-kinematic with nothing left to ever freeze it back. Same
+            // "physics/coroutines only really run in Play Mode" reasoning as DestroyObject's own
+            // Application.isPlaying branch. Bounds-math placement already got the object to a
+            // reasonable spot; there's no physics step to settle it further anyway.
+            if (!Application.isPlaying)
+                return;
+
+            var info = target.GetComponent<SpawnedObjectInfo>();
+            var id = info != null ? info.Id : -1;
+            if (id >= 0 && activeSettles.TryGetValue(id, out var existing) && existing != null)
+                StopCoroutine(existing);
+
+            var coroutine = StartCoroutine(SettleThenFreeze(target, id));
+            if (id >= 0)
+                activeSettles[id] = coroutine;
+        }
+
+        IEnumerator SettleThenFreeze(GameObject target, int id)
+        {
+            if (target == null || !target.TryGetComponent<Rigidbody>(out var rb))
+            {
+                activeSettles.Remove(id);
+                yield break;
+            }
+
+            // Waits one physics step BEFORE switching to dynamic, while still kinematic -- a
+            // kinematic Rigidbody's internal physics position is synced from its Transform once
+            // per fixed step, and Move/Rotate/etc. always set the Transform directly and call this
+            // in the very same frame. Flipping isKinematic to false before that sync has actually
+            // happened confirmed, in testing, to have physics take over from the STALE pre-move
+            // position and immediately snap the object back -- the position change registered
+            // correctly in code, but was invisible, since it never survived first contact with
+            // physics. This one-frame wait guarantees the sync runs first.
+            yield return new WaitForFixedUpdate();
+
+            if (target == null || rb == null)
+            {
+                activeSettles.Remove(id);
+                yield break;
+            }
+
+            rb.isKinematic = false;
+            // Smooths the visible fall/collision between fixed-timestep physics updates -- safe to
+            // turn on here since, for the whole time it's non-kinematic, physics is the only thing
+            // moving this object (nothing else sets its transform directly while a settle is in
+            // flight; FreezePhysics forces isKinematic back to true first if anything needs to).
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.WakeUp();
+
+            // Capped rather than open-ended -- if something never settles (wedged in an odd spot,
+            // pushed by another object also mid-settle, or any other edge case), force it back to
+            // kinematic anyway after a few seconds rather than leaving live physics running on it
+            // indefinitely, which is exactly the ongoing-drift risk "settle then freeze" exists to
+            // avoid in the first place.
+            const float maxSettleSeconds = 4f;
+            var elapsed = 0f;
+
+            while (elapsed < maxSettleSeconds)
+            {
+                yield return new WaitForFixedUpdate();
+                elapsed += Time.fixedDeltaTime;
+
+                if (target == null || rb == null)
+                {
+                    activeSettles.Remove(id);
+                    yield break; // deleted, undone, or the room was cleared mid-settle
+                }
+
+                // Unity's own physics sleep system already does exactly the "has this stopped
+                // moving" detection a hand-rolled velocity-threshold check would just reimplement
+                // less reliably.
+                if (rb.IsSleeping())
+                    break;
+            }
+
+            activeSettles.Remove(id);
+
+            if (target != null && rb != null)
+            {
+                rb.linearVelocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+                rb.isKinematic = true;
+                rb.interpolation = RigidbodyInterpolation.None; // back off now that it's kinematic again -- see AddPhysics' own comment
+
+                // Whatever this object just came to rest against might itself have just moved out
+                // from under something else -- e.g. it settled a level lower after its own support
+                // was deleted, stranding a THIRD object that was resting on it in turn. Checking
+                // after every settle (not just delete-triggered ones) is what makes an arbitrarily
+                // tall stack collapse correctly level by level rather than just one.
+                ReleaseUnsupportedObjects();
+            }
+        }
+
+        const float SupportCheckDistance = 0.03f;
+
+        // Anything left resting on nothing -- most commonly because whatever was directly beneath
+        // it just got deleted, but also correctly re-triggered by every settle completion above,
+        // so a multi-level stack collapses one level at a time instead of leaving everything above
+        // the removed object floating in place forever. Every object is normally kinematic/frozen
+        // at rest and only ever re-enters physics in response to its OWN spawn/move/grab-release,
+        // never because something under it disappeared -- this is what actually notices that and
+        // does something about it. Scanned across every still-present object rather than trying to
+        // track "what's resting on X" via collision contacts, since the room only ever holds a
+        // handful of objects at once; a full scan is cheap and can't miss an indirect case.
+        void ReleaseUnsupportedObjects()
+        {
+            foreach (var go in registry.Values)
+            {
+                if (go == null || !go.activeSelf)
+                    continue;
+                if (!go.TryGetComponent<Rigidbody>(out var rb) || !rb.isKinematic)
+                    continue; // no physics, or already mid-settle -- nothing to do here
+
+                if (!IsSupportedFromBelow(go))
+                    SettleObject(go);
+            }
+        }
+
+        // A thin box hugging the object's own base, just below it -- anything found there other
+        // than a piece of the object itself (checked via Transform.root, which correctly covers a
+        // composite's multiple child parts too) counts as support.
+        static bool IsSupportedFromBelow(GameObject go)
+        {
+            var bounds = ComputeWorldBounds(go);
+            // Straddles the object's own base line (half above it, half below) rather than sitting
+            // flush against it from underneath. A box with its edge exactly AT bounds.min.y is
+            // vulnerable to floating-point boundary jitter against a perfectly flush rest (zero
+            // gap by design -- see ComputeOnGroundPosition/ComputeOnTopPosition) -- Physics.
+            // OverlapBox can miss an exactly-touching collider depending on which way rounding
+            // falls. That false negative was making a just-settled object look unsupported,
+            // re-releasing it to physics again immediately, which re-triggered this same check
+            // right after -- a loop that kept flipping the object back to non-kinematic shortly
+            // after every freeze, so a later direct position set (Move, Rotate, ...) would get
+            // undone by physics settling again almost as fast as it happened. Overlapping slightly
+            // into the object's own volume is fine -- self-hits are still excluded below.
+            var center = new Vector3(bounds.center.x, bounds.min.y, bounds.center.z);
+            var halfExtents = new Vector3(bounds.extents.x, SupportCheckDistance * 0.5f, bounds.extents.z);
+
+            foreach (var hit in Physics.OverlapBox(center, halfExtents))
+            {
+                if (hit.transform.root != go.transform)
+                    return true;
+            }
+            return false;
         }
 
         // Stage 8: a small visible bulb (so it can actually be seen and pointed at -- an
@@ -1130,21 +1391,38 @@ namespace ObjectSpawning
             var prevPosition = target.transform.position;
             PushUndo($"move {target.name}", () =>
             {
-                if (target != null)
-                    target.transform.position = prevPosition;
+                if (target == null)
+                    return;
+                // Guards against undo firing while a settle from THIS move (or a later one) is
+                // still physically in flight -- without this, physics would just overwrite the
+                // restored position again on the very next fixed step.
+                FreezePhysics(target);
+                target.transform.position = prevPosition;
             });
+
+            // Same guard as above, going the other direction -- a rapid second move command
+            // shouldn't have its new position immediately fought by a settle still finishing from
+            // the previous one.
+            FreezePhysics(target);
 
             if (distanceMeters.HasValue && direction.HasValue)
             {
                 target.transform.position += ComputeDirectionalOffset(direction.Value, distanceMeters.Value);
                 LastTouchedGameObject = target;
                 Debug.Log($"[PrimitiveSpawner] Moved {target.name} {distanceMeters.Value:0.##}m {direction.Value}.");
+                SettleObject(target);
                 return;
             }
 
             target.transform.position = ResolvePlacement(target, relation, referenceShape, excludeFromReference: target);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Moved {target.name}.");
+            // Collision follow-up: the bounds-math placement above gets it close (including
+            // landing it right above a relation target like "the table"), then physics takes over
+            // for the last short drop -- this is what actually lets a voice-driven "move it onto
+            // the table" come to rest ON the table via real collision instead of a pure teleport,
+            // and lets it settle/lean against a neighbor if the target surface isn't flat.
+            SettleObject(target);
         }
 
         // Left/right/forward/backward are relative to the PLAYER's current flattened facing
@@ -1176,9 +1454,10 @@ namespace ObjectSpawning
         // Repositions target's Y so its bottom rests on the floor, keeping whatever X/Z it's
         // currently at -- reuses the exact same floor math every other placement path already
         // uses (ComputeOnGroundPosition/GetFloorY), just anchored to the object's own current
-        // position instead of a fresh spawn position. For the ray-grab feature: dropping a held
-        // object should always land it solidly on the floor, never mid-air or clipped into it,
-        // regardless of where along the beam it was released.
+        // position instead of a fresh spawn position. Collision follow-up: ray-grab release now
+        // uses SettleObject's real physics instead (so it can land ON another object, not just the
+        // floor) -- this hard, deterministic floor-snap is kept as a plain utility for anything
+        // that wants a guaranteed exact floor placement without waiting on a physics settle.
         public void SnapToGround(GameObject target)
         {
             if (target == null)
@@ -1212,13 +1491,51 @@ namespace ObjectSpawning
             var prevRotation = target.transform.rotation;
             PushUndo($"rotate {target.name}", () =>
             {
-                if (target != null)
-                    target.transform.rotation = prevRotation;
+                if (target == null)
+                    return;
+                FreezePhysics(target); // same in-flight-settle guard as Move's own revert
+                target.transform.rotation = prevRotation;
             });
 
+            // In-place rotation alone doesn't need a fresh settle afterward (unlike Move/spawn/
+            // grab-release, it doesn't reposition the object), just the same guard against a prior
+            // settle still being mid-flight when this fires.
+            FreezePhysics(target);
             target.transform.Rotate(Vector3.up, degrees, Space.World);
             LastTouchedGameObject = target;
             Debug.Log($"[PrimitiveSpawner] Rotated {target.name} by {degrees:0.##} degrees.");
+        }
+
+        // Ray-grab's left-hand button, replacing counterclockwise rotation (see ObjectMover) --
+        // straightens out anything left upside down or leaning at an odd angle (physics settling
+        // against another object, or a deliberate rotate, can both do this) and turns it to face
+        // whoever's holding it, rather than requiring several individual 45-degree presses to
+        // recover a specific orientation by hand.
+        public void ResetOrientation(GameObject target)
+        {
+            if (target == null)
+                return;
+
+            var toPlayer = headTransform != null
+                ? headTransform.position - target.transform.position
+                : -target.transform.forward;
+            toPlayer.y = 0f;
+            if (toPlayer.sqrMagnitude < 0.0001f)
+                toPlayer = Vector3.forward;
+
+            var prevRotation = target.transform.rotation;
+            PushUndo($"reset orientation {target.name}", () =>
+            {
+                if (target == null)
+                    return;
+                FreezePhysics(target);
+                target.transform.rotation = prevRotation;
+            });
+
+            FreezePhysics(target);
+            target.transform.rotation = Quaternion.LookRotation(toPlayer.normalized, Vector3.up);
+            LastTouchedGameObject = target;
+            Debug.Log($"[PrimitiveSpawner] Reset {target.name}'s orientation to upright, facing the player.");
         }
 
         public GameObject Duplicate(GameObject target)
@@ -1244,11 +1561,16 @@ namespace ObjectSpawning
             var copyId = Register(copy, shape);
             visualState[copyId] = sourceVisual;
             ApplyColor(copy, color);
+            AddPhysics(copy); // re-asserts kinematic/gravity on the Rigidbody Instantiate already cloned from target
 
             SpawnCount++;
             LastTouchedGameObject = copy;
             Debug.Log($"[PrimitiveSpawner] Duplicated {target.name} -> {copy.name}.");
             PushUndo($"duplicate {target.name}", () => DestroyRegistered(copy));
+            // Spawns at the default in-front-of-user spot, which could land right on top of
+            // something -- settles the same way a fresh Spawn does rather than leaving it floating
+            // or embedded in whatever it landed on.
+            SettleObject(copy);
             return copy;
         }
 
@@ -1277,8 +1599,18 @@ namespace ObjectSpawning
             objectSelector?.ClearSelection();
 
             Debug.Log($"[PrimitiveSpawner] Deleted {target.name}.");
+            // Guards against deleting something that's still mid-settle -- an inactive GameObject's
+            // Rigidbody stops simulating entirely but keeps whatever velocity it had, which would
+            // otherwise resume (a small unexpected extra fall) if this delete is later undone.
+            FreezePhysics(target);
             target.SetActive(false);
             hiddenForUndo.Add(target);
+            // Collision follow-up: anything that was resting on target is now floating in mid-air
+            // with nothing telling it to fall -- every object is normally kinematic/frozen and only
+            // re-enters physics for its OWN spawn/move/grab-release, never because something under
+            // it vanished. This is what actually notices and releases it (cascades correctly
+            // through a multi-level stack -- see ReleaseUnsupportedObjects' own comment).
+            ReleaseUnsupportedObjects();
 
             PushUndo($"delete {target.name}",
                 revert: () =>
@@ -1287,6 +1619,7 @@ namespace ObjectSpawning
                         return;
                     hiddenForUndo.Remove(target);
                     target.SetActive(true);
+                    FreezePhysics(target); // same clean-resting-state guarantee on the way back in
                     if (info != null)
                         registry[id] = target;
                     LastTouchedGameObject = target;
@@ -1348,6 +1681,7 @@ namespace ObjectSpawning
             undoStack.Clear();
             visualState.Clear();
             wireframeOverlays.Clear(); // overlay children were destroyed above along with their owning objects
+            activeSettles.Clear(); // stale Coroutine references to now-destroyed objects -- nothing left to stop or track
 
             LastTouchedGameObject = null;
             SpawnCount = 0;
@@ -1466,7 +1800,7 @@ namespace ObjectSpawning
 
             ClearAll();
 
-            suppressSpawnAnimation = true;
+            suppressSpawnEffects = true;
             try
             {
                 foreach (var entry in save.objects)
@@ -1474,7 +1808,7 @@ namespace ObjectSpawning
             }
             finally
             {
-                suppressSpawnAnimation = false;
+                suppressSpawnEffects = false;
             }
 
             // A fresh "undo" right after loading should never unwind back into the room that

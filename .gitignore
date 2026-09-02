@@ -117,3 +117,4 @@ Backend/.env
 # Stage0SceneBuilder's WitConfiguration lookup (or rebuild the scene after adding one).
 Assets/object_spawner_voice.asset
 Assets/object_spawner_voice.asset.meta
+Exports/

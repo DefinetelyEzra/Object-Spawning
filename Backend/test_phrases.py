@@ -198,6 +198,11 @@ CASES = [
     ("show how it's textured", "show_uv_mapping", None, None, None, None, None, None, False, None),
     ("show the final render", "show_normal_rendering", None, None, None, None, None, None, False, None),
     ("hide the wireframe", "show_normal_rendering", None, None, None, None, None, None, False, None),
+    # Collision follow-up: reset_orientation -- distinct from plain rotate, which spins by an
+    # amount rather than resetting to a known upright/facing-player orientation.
+    ("reset its orientation", "reset_orientation", None, None, None, None, None, None, False, None),
+    ("make it upright", "reset_orientation", None, None, None, None, None, None, False, None),
+    ("face me", "reset_orientation", None, None, None, None, None, None, False, None),
 ]
 
 

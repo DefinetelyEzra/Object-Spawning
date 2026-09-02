@@ -148,6 +148,11 @@ namespace ObjectSpawning
         ShowWireframe,
         ShowUvMapping,
         ShowNormalRendering,
+
+        // Collision follow-up: straightens the current object upright and turns it to face the
+        // player -- resolves a per-object target like Retexture. The ray-grab left-hand button's
+        // voice equivalent (see PrimitiveSpawner.ResetOrientation).
+        ResetOrientation,
     }
 
     public readonly struct EditIntent
@@ -728,6 +733,35 @@ namespace ObjectSpawning
                 if (text.Contains(phrase))
                 {
                     intent = new EditIntent(EditAction.ShowNormalRendering);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Collision follow-up: the voice-command equivalent of the ray-grab left-hand button's
+        // new reset role -- same plain-substring, no-overlap phrase matching as the pipeline-view
+        // phrases above.
+        static readonly string[] ResetOrientationPhrases =
+        {
+            "reset its orientation", "reset the orientation", "reset its rotation",
+            "reset the rotation", "make it upright", "straighten it out", "straighten it up",
+            "face me", "turn it to face me", "flip it right side up", "flip it upright",
+        };
+
+        public static bool TryParseResetOrientation(string transcript, out EditIntent intent)
+        {
+            intent = default;
+            if (string.IsNullOrWhiteSpace(transcript))
+                return false;
+
+            var text = transcript.ToLowerInvariant();
+            foreach (var phrase in ResetOrientationPhrases)
+            {
+                if (text.Contains(phrase))
+                {
+                    intent = new EditIntent(EditAction.ResetOrientation);
                     return true;
                 }
             }

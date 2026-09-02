@@ -308,6 +308,13 @@ namespace ObjectSpawning
                 return;
             }
 
+            // Collision follow-up: same reasoning as the pipeline-view check above.
+            if (VoiceIntentParser.TryParseResetOrientation(transcript, out var resetOrientationIntent))
+            {
+                ApplyEdit(resetOrientationIntent);
+                return;
+            }
+
             // It only ever matches when an explicit scene-referring word is present ("room"/
             // "lighting"/"ambiance"/...), so it can never collide with a normal per-object edit --
             // but it DOES need to win over the generic
@@ -429,6 +436,7 @@ namespace ObjectSpawning
                 case EditAction.ShowWireframe: spawner.ShowWireframe(target); break;
                 case EditAction.ShowUvMapping: spawner.ShowUvMapping(target); break;
                 case EditAction.ShowNormalRendering: spawner.ShowNormalRendering(target); break;
+                case EditAction.ResetOrientation: spawner.ResetOrientation(target); break;
             }
         }
     }

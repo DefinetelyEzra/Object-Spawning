@@ -30,7 +30,7 @@ namespace ObjectSpawning
         class ParseIntentResponseBody
         {
             public bool recognized;
-            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture | adjust_lighting | undo | reroll_style | save_scene | load_scene | recall_asset | export_mesh | show_wireframe | show_uv_mapping | show_normal_rendering
+            public string action;      // "create" (default if empty) | generate | resize | recolor | move | rotate | duplicate | delete | clear | retexture | adjust_lighting | undo | reroll_style | save_scene | load_scene | recall_asset | export_mesh | show_wireframe | show_uv_mapping | show_normal_rendering | reset_orientation
             public string shape;       // create only
             public string prompt;      // generate only
             public string color;       // create or recolor
@@ -310,6 +310,9 @@ namespace ObjectSpawning
                     return true;
                 case "show_normal_rendering":
                     intent = new EditIntent(EditAction.ShowNormalRendering);
+                    return true;
+                case "reset_orientation":
+                    intent = new EditIntent(EditAction.ResetOrientation);
                     return true;
                 default:
                     intent = default;
