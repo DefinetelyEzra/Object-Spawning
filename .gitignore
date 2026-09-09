@@ -118,3 +118,4 @@ Backend/.env
 Assets/object_spawner_voice.asset
 Assets/object_spawner_voice.asset.meta
 Exports/
+.claude
